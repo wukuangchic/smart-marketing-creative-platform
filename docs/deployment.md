@@ -4,7 +4,7 @@
 
 ## 1. 数据盘
 
-格式化前先用 `lsblk -f`、`blkid` 和 `wipefs -n /dev/your-data-device` 确认 `/dev/your-data-device` 无分区、文件系统或现有数据。仅确认为空盘后才创建文件系统。用 UUID 写入 `/etc/fstab` 挂载到 `/srv/creative-platform/media`，重启后复核挂载，再设置目录归属 UID/GID `1001`。部署时将 `MEDIA_HOST_PATH=/srv/creative-platform/media`。
+格式化前先用 `lsblk -f`、`blkid` 和 `wipefs -n /dev/your-data-device` 确认 `/dev/your-data-device` 无分区、文件系统或现有数据。仅确认为空盘后才创建文件系统。创建挂载点时先设为 `root:root` 且权限 `000`，再用 UUID 写入 `/etc/fstab` 并挂载到 `/srv/creative-platform/media`；挂载成功后将文件系统根目录设为 UID/GID `1001`、权限 `0750`。这样数据盘意外未挂载时，容器不能把图片写到系统盘上的空挂载目录。重启后复核挂载。部署时将 `MEDIA_HOST_PATH=/srv/creative-platform/media`。
 
 PostgreSQL 当前使用 Docker named volume，位于系统盘。上线前为数据库和图片文件确定独立于本机的备份目标，并执行一次恢复演练。
 
