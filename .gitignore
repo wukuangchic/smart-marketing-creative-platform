@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.next/
+node_modules/
+coverage/
+dist/
+data/
+secrets/*.json
+!secrets/.gitkeep
+*.pem
+*.key
+*.p12
+.DS_Store
+*.tsbuildinfo

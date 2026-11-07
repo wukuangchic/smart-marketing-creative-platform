@@ -1,0 +1,19 @@
+import { NextResponse } from "next/server";
+import { requireUser } from "@/server/auth";
+import { query } from "@/server/db";
+import { jsonError } from "@/server/http";
+
+export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
+  try {
+    await requireUser();
+    const { id } = await params;
+    const result = await query(
+      `SELECT t.id,t.mode,t.prompt,t.settings,t.status,t.created_at,t.finished_at,u.display_name AS creator_name,
+       (SELECT '/api/assets/'||a.id FROM media_assets a WHERE a.id=t.input_asset_id) AS input_url,
+       COALESCE((SELECT json_agg(json_build_object('id',r.id,'provider',r.provider,'modelKey',r.model_key,'modelId',r.model_id,'status',r.status,'requestedCount',r.requested_count,'imageCount',r.image_count,'usage',r.usage,'estimatedCost',r.estimated_cost,'currency',r.currency,'estimatedCostCny',r.estimated_cost_cny,'errorMessage',r.error_message,'startedAt',r.started_at,'finishedAt',r.finished_at,'outputs',COALESCE((SELECT json_agg(json_build_object('id',a.id,'url','/api/assets/'||a.id,'width',a.width,'height',a.height) ORDER BY a.created_at) FROM media_assets a WHERE a.run_id=r.id),'[]'::json))) ORDER BY r.created_at) FROM provider_runs r WHERE r.task_id=t.id),'[]'::json) AS runs
+       FROM generation_tasks t JOIN users u ON u.id=t.creator_id WHERE t.id=$1`, [id],
+    );
+    if (!result.rowCount) return NextResponse.json({ error: "任务不存在" }, { status: 404 });
+    return NextResponse.json({ task: result.rows[0] });
+  } catch (error) { return jsonError(error); }
+}

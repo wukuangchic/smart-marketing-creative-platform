@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: creative
+      POSTGRES_USER: creative
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U creative -d creative"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [internal]
+
+  migrate:
+    build: .
+    command: ["node", "--import", "tsx", "scripts/migrate.ts"]
+    environment:
+      DATABASE_URL: postgres://creative:${POSTGRES_PASSWORD}@db:5432/creative
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [internal]
+    restart: "no"
+
+  web:
+    build: .
+    restart: unless-stopped
+    environment: &app-env
+      NODE_ENV: production
+      DATABASE_URL: postgres://creative:${POSTGRES_PASSWORD}@db:5432/creative
+      MEDIA_ROOT: /data/media
+      APP_BASE_URL: ${APP_BASE_URL:?set APP_BASE_URL in .env}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_REDIRECT_URI: ${FEISHU_REDIRECT_URI:-}
+      BOOTSTRAP_ADMIN_OPEN_IDS: ${BOOTSTRAP_ADMIN_OPEN_IDS:-}
+      CREDENTIALS_ENCRYPTION_KEY: ${CREDENTIALS_ENCRYPTION_KEY:-}
+      DEV_AUTH_BYPASS: "0"
+      STORAGE_WARNING_PERCENT: ${STORAGE_WARNING_PERCENT:-80}
+      STORAGE_STOP_PERCENT: ${STORAGE_STOP_PERCENT:-95}
+      BAILIAN_BILLING_ACCESS_KEY_ID: ${BAILIAN_BILLING_ACCESS_KEY_ID:-}
+      BAILIAN_BILLING_ACCESS_KEY_SECRET: ${BAILIAN_BILLING_ACCESS_KEY_SECRET:-}
+      BAILIAN_BILLING_ENDPOINT: ${BAILIAN_BILLING_ENDPOINT:-https://business.aliyuncs.com}
+      BAILIAN_BILLING_PRODUCT_CODE: ${BAILIAN_BILLING_PRODUCT_CODE:-}
+      BAILIAN_BILLING_PRODUCT_TYPE: ${BAILIAN_BILLING_PRODUCT_TYPE:-}
+      BAILIAN_BILLING_PIP_CODE: ${BAILIAN_BILLING_PIP_CODE:-}
+      GOOGLE_BILLING_SERVICE_ACCOUNT_FILE: /run/secrets/google-billing.json
+      GOOGLE_BILLING_PROJECT_ID: ${GOOGLE_BILLING_PROJECT_ID:-}
+      GOOGLE_BILLING_DATASET: ${GOOGLE_BILLING_DATASET:-}
+      GOOGLE_BILLING_TABLE: ${GOOGLE_BILLING_TABLE:-}
+      GOOGLE_BILLING_SERVICE_FILTER: ${GOOGLE_BILLING_SERVICE_FILTER:-}
+    volumes:
+      - ${MEDIA_HOST_PATH:-./data/media}:/data/media
+      - ${SECRETS_HOST_PATH:-./secrets}:/run/secrets:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal]
+
+  worker:
+    build: .
+    command: ["npm", "run", "worker"]
+    restart: unless-stopped
+    environment: *app-env
+    volumes:
+      - ${MEDIA_HOST_PATH:-./data/media}:/data/media
+      - ${SECRETS_HOST_PATH:-./secrets}:/run/secrets:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal]
+
+networks:
+  internal: {}
+
+volumes:
+  postgres_data:

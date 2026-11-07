@@ -1,0 +1,14 @@
+.git
+.next
+node_modules
+coverage
+dist
+data
+secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.log
