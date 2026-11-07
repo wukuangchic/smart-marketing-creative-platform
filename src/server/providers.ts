@@ -1,7 +1,7 @@
-import { decryptSecret } from "@/server/crypto";
-import { query } from "@/server/db";
-import { MODELS, type ModelKey } from "@/server/models";
-import { readMedia, removeMedia, storeGenerated } from "@/server/media";
+import { decryptSecret } from "./crypto";
+import { query } from "./db";
+import { MODELS, type ModelKey } from "./models";
+import { readMedia, removeMedia, storeGenerated } from "./media";
 
 export interface ImageOutput {
   bytes: Buffer;
@@ -77,7 +77,7 @@ export async function runProviderRun(runId: string) {
     }
     for (const output of providerResult.outputs) {
       const asset = await storeGenerated(output.bytes, output.mediaType, run.creator_id);
-      const client = await (await import("@/server/db")).pool.connect();
+      const client = await (await import("./db")).pool.connect();
       try {
         await client.query("BEGIN");
         const task = await client.query("SELECT id FROM generation_tasks WHERE id=$1 FOR UPDATE", [run.task_id]);

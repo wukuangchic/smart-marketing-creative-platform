@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, stat, statfs, writeFile, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
-import { HttpError } from "@/server/errors";
+import { HttpError } from "./errors";
 
 const root = path.resolve(/*turbopackIgnore: true*/ process.env.MEDIA_ROOT || "./data/media");
 const accepted = new Set(["image/png", "image/jpeg", "image/webp"]);
