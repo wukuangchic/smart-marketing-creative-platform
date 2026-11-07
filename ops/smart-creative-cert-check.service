@@ -1,0 +1,7 @@
+[Unit]
+Description=Check smart creative IP TLS certificate expiry
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/smart-creative-check-cert-expiry

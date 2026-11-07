@@ -1,0 +1,10 @@
+[Unit]
+Description=Check smart creative IP TLS certificate every two hours
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

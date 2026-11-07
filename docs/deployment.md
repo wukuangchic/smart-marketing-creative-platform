@@ -46,6 +46,8 @@ Let’s Encrypt 已支持短期 IP 地址证书，证书有效期约 160 小时�
 
 Nginx 需处理 `/.well-known/acme-challenge/`，其余请求代理到 `http://127.0.0.1:3000`，并转发原始 `Host`、`X-Forwarded-For`、`X-Forwarded-Proto`。确认 HTTP-01 挑战可从公网访问后，用 Certbot `--ip-address YOUR_PUBLIC_IP --preferred-profile shortlived` 签发。配置 Certbot 的自动续期定时器及部署钩子重载 Nginx，并设置过期时间监控；只有证书和续期告警都通过后才登记飞书 OAuth IP 回调地址。
 
+仓库提供 Nginx、续期部署钩子和 systemd 证书检查定时器模板。签发证书后安装 `ops/nginx.conf` 到 `/etc/nginx/sites-available/smart-creative`，将 `ops/reload-nginx-after-renewal.sh` 安装到 `/etc/letsencrypt/renewal-hooks/deploy/`，把 `ops/check-cert-expiry.sh` 安装为 `/usr/local/sbin/smart-creative-check-cert-expiry`，并安装 `ops/smart-creative-cert-check.service` 和 `.timer` 到 `/etc/systemd/system/`。执行 `systemctl daemon-reload`、启用检查定时器，并确认 `certbot.timer` 和 `smart-creative-cert-check.timer` 均处于活动状态。检查失败会记录到 systemd journal；外部通知渠道需另行配置。
+
 证书私钥保存在 `/etc/letsencrypt`，不复制进仓库或 Docker 镜像。不要关闭证书校验或在 Nginx 与应用之间使用公网明文连接。
 
 ## 4. 上线验收
