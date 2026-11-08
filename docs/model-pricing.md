@@ -19,11 +19,13 @@
 | Wan 2.6 Image | 是 | 是 | ¥0.20 | ¥0.20 | — |
 | Wan 2.6 Text-to-Image | 是 | 否 | ¥0.20 | ¥0.20 | — |
 | Wan 2.5 Text-to-Image Preview | 是 | 否 | ¥0.20 | ¥0.20 | 预览型号 |
+| Wan 2.5 Image-to-Image Preview | 否 | 是 | ¥0.20 | — | 单图编辑，输出最高约 1280px |
 | Wan 2.2 Text-to-Image Plus | 是 | 否 | ¥0.20 | ¥0.20 | — |
 | Wan 2.2 Text-to-Image Flash | 是 | 否 | ¥0.14 | ¥0.14 | — |
 | Wan 2.1 Text-to-Image Plus | 是 | 否 | ¥0.20 | ¥0.20 | — |
 | Wan 2.1 Text-to-Image Turbo | 是 | 否 | ¥0.14 | ¥0.14 | — |
 | Wan 2.0 Text-to-Image Turbo | 是 | 否 | ¥0.04 | ¥0.04 | — |
+| Wan 2.1 Image Edit（legacy） | 否 | 是 | ¥0.14 | — | 北京地域旧版通用图像编辑接口，单张输出 |
 | Z-Image Turbo | 是 | 否 | ¥0.10 | ¥0.10 | 当前关闭提示词改写；开启时官方标准价为 ¥0.20/张 |
 
 官方模型目录与价格：[图片生成和编辑能力目录](https://help.aliyun.com/zh/model-studio/image-model/) · [百炼模型调用价格](https://help.aliyun.com/zh/model-studio/model-pricing)。千问 3.0 Pro / 3.0 的图像编辑输入参考价为 ¥0.02/张，平台成本估算目前按生成输出单价计算，未加入此输入图片费用。
@@ -35,8 +37,9 @@
 | Gemini 3 Pro Image | 是 | 是 | $0.134 | $0.134 |
 | Gemini 3.1 Flash Image | 是 | 是 | $0.067 | $0.101 |
 | Gemini 3.1 Flash Lite Image | 是 | 是 | $0.0336 | 不支持 |
+| Gemini 2.5 Flash Image（已弃用） | 是 | 是 | $0.039 | 不支持 |
 
-官方标准付费价格：[Gemini API 定价](https://ai.google.dev/gemini-api/docs/pricing)；图像模型能力：[图片生成指南](https://ai.google.dev/gemini-api/docs/image-generation)。输出参考价不包含提示词和输入图片 token 费用。
+官方标准付费价格：[Gemini API 定价](https://ai.google.dev/gemini-api/docs/pricing)；图像模型能力：[图片生成指南](https://ai.google.dev/gemini-api/docs/image-generation)。Gemini 2.5 Flash Image 将于 2027-03-15 停止服务，作为旧模型保留以便过渡。输出参考价不包含提示词和输入图片 token 费用。
 
 ## 智谱 AI
 

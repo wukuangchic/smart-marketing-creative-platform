@@ -59,7 +59,7 @@ export function Studio() {
     finally { setLoading(false); }
   }
   const isRunning = loading || Boolean(task && ["queued", "running"].includes(task.status));
-  const commonSizes = selected.length ? SHARED_IMAGE_SIZES.filter((size) => selected.every((key) => { const model=MODELS.find((item)=>item.key===key); return model?.supportedSizes.includes(size); })) : SHARED_IMAGE_SIZES;
+  const commonSizes = selected.length ? SHARED_IMAGE_SIZES.filter((size) => selected.every((key) => { const model=MODELS.find((item)=>item.key===key); return model ? (model.supportedSizes as readonly ("1K" | "2K")[]).includes(size) : false; })) : SHARED_IMAGE_SIZES;
   const commonSizesKey = commonSizes.join(",");
   useEffect(() => { if (!commonSizes.includes(imageSize)) setImageSize(commonSizes[0] || "1K"); }, [commonSizesKey, imageSize]);
   return <div className="studio-page">

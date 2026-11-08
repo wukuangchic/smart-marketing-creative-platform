@@ -163,6 +163,8 @@ class BailianAdapter implements ProviderAdapter {
 
   private async call(input: ImageInput): Promise<ProviderResult> {
     const endpoint = (this.endpoint || "https://dashscope.aliyuncs.com").replace(/\/$/, "");
+    if (this.modelId === "wan2.5-i2i-preview") return this.callAsyncWanEdit(endpoint, input, false);
+    if (this.modelId === "wanx2.1-imageedit") return this.callAsyncWanEdit(endpoint, input, true);
     if (this.modelId.startsWith("wanx2.") || this.modelId === "wan2.5-t2i-preview" || this.modelId.startsWith("wan2.2-t2i-")) {
       if (input.image) throw new Error(`${this.modelId} 当前仅支持文生图`);
       return this.callAsyncWan(endpoint, input);
@@ -197,6 +199,47 @@ class BailianAdapter implements ProviderAdapter {
       signal: AbortSignal.timeout(60_000), cache: "no-store",
     });
     let body = await response.json() as Record<string, unknown>;
+    if (!response.ok) throw new Error(providerMessage(body, response.status));
+    const initialOutput = body.output as Record<string, unknown> | undefined;
+    const taskId = stringValue(initialOutput?.task_id) || stringValue(body.task_id);
+    if (!taskId) return this.resultFromBody(body);
+    const deadline = Date.now() + 9 * 60_000;
+    while (true) {
+      const current = body.output as Record<string, unknown> | undefined;
+      const status = stringValue(current?.task_status) || stringValue(body.status) || "";
+      if (status === "SUCCEEDED") break;
+      if (["FAILED", "CANCELED", "UNKNOWN"].includes(status)) throw new Error(providerMessage(current || body, 502));
+      if (Date.now() >= deadline) throw new DOMException("供应商异步任务轮询超时", "TimeoutError");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const poll = await fetch(`${endpoint}/api/v1/tasks/${encodeURIComponent(taskId)}`, {
+        headers: { authorization: `Bearer ${this.apiKey}` }, signal: AbortSignal.timeout(60_000), cache: "no-store",
+      });
+      body = await poll.json() as Record<string, unknown>;
+      if (!poll.ok) throw new Error(providerMessage(body, poll.status));
+    }
+    return this.resultFromBody(body);
+  }
+
+  private async callAsyncWanEdit(endpoint: string, input: ImageInput, legacy: boolean): Promise<ProviderResult> {
+    if (!input.image || !input.mediaType) throw new Error(`${this.modelId} 需要上传原图`);
+    const imageData = `data:${input.mediaType};base64,${input.image.toString("base64")}`;
+    const requestInput = legacy
+      ? { function: "description_edit", prompt: input.prompt, base_image_url: imageData }
+      : { prompt: input.prompt, images: [imageData] };
+    const parameters: Record<string, unknown> = { n: input.count };
+    if (!legacy) {
+      parameters.size = wan25Size(input.aspectRatio);
+      parameters.prompt_extend = true;
+      parameters.watermark = false;
+    }
+    let body: Record<string, unknown>;
+    const response = await fetch(`${endpoint}/api/v1/services/aigc/image2image/image-synthesis`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "X-DashScope-Async": "enable" },
+      body: JSON.stringify({ model: this.modelId, input: requestInput, parameters }),
+      signal: AbortSignal.timeout(60_000), cache: "no-store",
+    });
+    body = await response.json() as Record<string, unknown>;
     if (!response.ok) throw new Error(providerMessage(body, response.status));
     const initialOutput = body.output as Record<string, unknown> | undefined;
     const taskId = stringValue(initialOutput?.task_id) || stringValue(body.task_id);
@@ -264,9 +307,11 @@ class GeminiAdapter implements ProviderAdapter {
     let lastUsage: Record<string, unknown> = {};
     let requestId: string | undefined;
     for (let index = 0; index < input.count; index++) {
+      const imageConfig: Record<string, string> = { aspectRatio: input.aspectRatio };
+      if (this.modelId !== "gemini-2.5-flash-image") imageConfig.imageSize = input.imageSize;
       const response = await fetch(`${endpoint}/models/${encodeURIComponent(this.modelId)}:generateContent`, {
         method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
-        body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseModalities: ["TEXT", "IMAGE"], imageConfig: { aspectRatio: input.aspectRatio, imageSize: input.imageSize } } }),
+        body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseModalities: ["TEXT", "IMAGE"], imageConfig } }),
         signal: AbortSignal.timeout(600_000), cache: "no-store",
       });
       const body = await response.json() as Record<string, unknown>;
@@ -334,6 +379,14 @@ export function qwenSize(aspectRatio: string, imageSize: string) {
   const width = a >= b ? maxSide : Math.round(maxSide * a / b);
   const height = b >= a ? maxSide : Math.round(maxSide * b / a);
   return `${width}*${height}`;
+}
+
+function wan25Size(aspectRatio: string) {
+  const sizes: Record<string, string> = {
+    "1:1": "1280*1280", "3:2": "1200*800", "2:3": "800*1200",
+    "4:3": "1280*960", "3:4": "960*1280", "16:9": "1280*720", "9:16": "720*1280",
+  };
+  return sizes[aspectRatio] || "1280*1280";
 }
 
 export function glmSize(aspectRatio: string, imageSize: string) {
