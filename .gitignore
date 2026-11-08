@@ -6,7 +6,7 @@ node_modules/
 coverage/
 dist/
 data/
-secrets/*.json
+secrets/*
 !secrets/.gitkeep
 *.pem
 *.key
