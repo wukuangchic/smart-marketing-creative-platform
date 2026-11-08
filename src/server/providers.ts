@@ -1,7 +1,8 @@
 import { decryptSecret } from "./crypto";
 import { query } from "./db";
-import { MODELS, type ModelKey } from "./models";
+import { MODELS } from "./models";
 import { readMedia, removeMedia, storeGenerated } from "./media";
+import type { ProviderSlug } from "./types";
 
 export interface ImageOutput {
   bytes: Buffer;
@@ -35,7 +36,7 @@ const MAX_GENERATED_BYTES = 30 * 1024 * 1024;
 
 export async function runProviderRun(runId: string) {
   const runResult = await query<{
-    run_id: string; task_id: string; provider: "bailian" | "gemini"; model_key: string; model_id: string;
+    run_id: string; task_id: string; provider: ProviderSlug; model_key: string; model_id: string;
     requested_count: number; mode: "text-to-image" | "image-to-image"; prompt: string; settings: { aspectRatio: string; imageSize: string };
     input_asset_id: string | null; creator_id: string;
   }>(
@@ -59,7 +60,7 @@ export async function runProviderRun(runId: string) {
     if (!model) throw new Error("模型配置不存在");
     const apiKey = decryptSecret(config.api_key_ciphertext);
     apiKeyForRedaction = apiKey;
-    const adapter = createAdapter(run.provider, apiKey, config.endpoint || "", config.config || {});
+    const adapter = createAdapter(run.provider, run.model_id, apiKey, config.endpoint || "", config.config || {});
     let providerResult: ProviderResult;
     if (run.mode === "image-to-image" && run.input_asset_id) {
       const input = await query<{ relative_path: string; media_type: string }>("SELECT relative_path,media_type FROM media_assets WHERE id=$1", [run.input_asset_id]);
@@ -147,64 +148,101 @@ export function estimateCost(pricing: Record<string, unknown>, imageSize: string
   return { amount: (Number(value) * count).toFixed(8), currency };
 }
 
-export function createAdapter(provider: "bailian" | "gemini", apiKey: string, endpoint: string, config: Record<string, unknown> = {}): ProviderAdapter {
-  if (provider === "bailian") return new BailianAdapter(apiKey, endpoint);
-  return new GeminiAdapter(apiKey, endpoint || "https://generativelanguage.googleapis.com/v1beta", config);
+export function createAdapter(provider: ProviderSlug, modelId: string, apiKey: string, endpoint: string, config: Record<string, unknown> = {}): ProviderAdapter {
+  if (provider === "bailian") return new BailianAdapter(apiKey, endpoint, modelId);
+  if (provider === "gemini") return new GeminiAdapter(apiKey, endpoint || "https://generativelanguage.googleapis.com/v1beta", modelId);
+  return new ZhipuAdapter(apiKey, endpoint || "https://open.bigmodel.cn/api/paas/v4", modelId);
 }
 
+type ImageInput = { prompt: string; count: number; aspectRatio: string; imageSize: string; image: Buffer | null; mediaType: string | null };
+
 class BailianAdapter implements ProviderAdapter {
-  constructor(private apiKey: string, private endpoint: string) {}
-  generateTextToImage(input: Parameters<ProviderAdapter["generateTextToImage"]>[0]) {
-    return this.call({ ...input, image: null, mediaType: null });
-  }
-  editImage(input: Parameters<ProviderAdapter["editImage"]>[0]) {
-    return this.call({ ...input, image: input.image, mediaType: input.mediaType });
-  }
-  private async call(input: { prompt: string; count: number; aspectRatio: string; imageSize: string; image: Buffer | null; mediaType: string | null }): Promise<ProviderResult> {
-    if (!this.endpoint) throw new Error("请在百炼配置中填写对应地域和业务空间的 API Endpoint");
+  constructor(private apiKey: string, private endpoint: string, private modelId: string) {}
+  generateTextToImage(input: Parameters<ProviderAdapter["generateTextToImage"]>[0]) { return this.call({ ...input, image: null, mediaType: null }); }
+  editImage(input: Parameters<ProviderAdapter["editImage"]>[0]) { return this.call({ ...input, image: input.image, mediaType: input.mediaType }); }
+
+  private async call(input: ImageInput): Promise<ProviderResult> {
+    const endpoint = (this.endpoint || "https://dashscope.aliyuncs.com").replace(/\/$/, "");
+    if (this.modelId.startsWith("wanx2.") || this.modelId === "wan2.5-t2i-preview" || this.modelId.startsWith("wan2.2-t2i-")) {
+      if (input.image) throw new Error(`${this.modelId} 当前仅支持文生图`);
+      return this.callAsyncWan(endpoint, input);
+    }
+
     const content: Array<Record<string, string>> = [];
     if (input.image) content.push({ image: `data:${input.mediaType};base64,${input.image.toString("base64")}` });
     content.push({ text: input.prompt });
-    const size = qwenSize(input.aspectRatio, input.imageSize);
-    const response = await fetch(`${this.endpoint.replace(/\/$/, "")}/api/v1/services/aigc/multimodal-generation/generation`, {
+    const parameters: Record<string, unknown> = { size: qwenSize(input.aspectRatio, input.imageSize), watermark: false };
+    if (this.modelId !== "z-image-turbo") parameters.n = input.count;
+    if (this.modelId === "z-image-turbo") parameters.prompt_extend = false;
+    else if (this.modelId.startsWith("qwen-image-3.0") || this.modelId.startsWith("qwen-image-2.0")) parameters.prompt_extend = true;
+    const body = {
+      model: this.modelId,
+      input: { messages: [{ role: "user", content }] },
+      parameters,
+    };
+    const response = await fetch(`${endpoint}/api/v1/services/aigc/multimodal-generation/generation`, {
       method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify({ model: "qwen-image-3.0-pro", input: { messages: [{ role: "user", content }] }, parameters: { n: input.count, size, prompt_extend: true, watermark: false } }),
-      signal: AbortSignal.timeout(600_000), cache: "no-store",
+      body: JSON.stringify(body), signal: AbortSignal.timeout(600_000), cache: "no-store",
     });
-    const body = await response.json() as Record<string, unknown>;
+    const result = await response.json() as Record<string, unknown>;
+    if (!response.ok) throw new Error(providerMessage(result, response.status));
+    return this.resultFromBody(result);
+  }
+
+  private async callAsyncWan(endpoint: string, input: ImageInput): Promise<ProviderResult> {
+    const response = await fetch(`${endpoint}/api/v1/services/aigc/text2image/image-synthesis`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}`, "X-DashScope-Async": "enable" },
+      body: JSON.stringify({ model: this.modelId, input: { prompt: input.prompt }, parameters: { n: input.count, size: qwenSize(input.aspectRatio, input.imageSize) } }),
+      signal: AbortSignal.timeout(60_000), cache: "no-store",
+    });
+    let body = await response.json() as Record<string, unknown>;
     if (!response.ok) throw new Error(providerMessage(body, response.status));
+    const initialOutput = body.output as Record<string, unknown> | undefined;
+    const taskId = stringValue(initialOutput?.task_id) || stringValue(body.task_id);
+    if (!taskId) return this.resultFromBody(body);
+    const deadline = Date.now() + 9 * 60_000;
+    while (true) {
+      const current = body.output as Record<string, unknown> | undefined;
+      const status = stringValue(current?.task_status) || stringValue(body.status) || "";
+      if (status === "SUCCEEDED") break;
+      if (["FAILED", "CANCELED", "UNKNOWN"].includes(status)) throw new Error(providerMessage(current || body, 502));
+      if (Date.now() >= deadline) throw new DOMException("供应商异步任务轮询超时", "TimeoutError");
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const poll = await fetch(`${endpoint}/api/v1/tasks/${encodeURIComponent(taskId)}`, {
+        headers: { authorization: `Bearer ${this.apiKey}` }, signal: AbortSignal.timeout(60_000), cache: "no-store",
+      });
+      body = await poll.json() as Record<string, unknown>;
+      if (!poll.ok) throw new Error(providerMessage(body, poll.status));
+    }
+    return this.resultFromBody(body);
+  }
+
+  private async resultFromBody(body: Record<string, unknown>): Promise<ProviderResult> {
     const output = body.output as Record<string, unknown> | undefined;
     const choices = output?.choices as Array<Record<string, unknown>> | undefined;
     const message = choices?.[0]?.message as Record<string, unknown> | undefined;
     const parts = message?.content as Array<Record<string, unknown>> | undefined;
     const urls = parts?.map((part) => part.image).filter((value): value is string => typeof value === "string") || [];
+    const taskResults = output?.results as Array<Record<string, unknown>> | undefined;
     const directData = body.data as Array<Record<string, unknown>> | undefined;
-    const images = urls.length ? urls : directData?.map((item) => item.url || item.b64_json).filter((value): value is string => typeof value === "string") || [];
+    const images = urls.length ? urls : taskResults?.map((item) => item.url).filter((value): value is string => typeof value === "string")
+      || directData?.map((item) => item.url || item.b64_json).filter((value): value is string => typeof value === "string") || [];
     if (!images.length) throw new Error("百炼调用成功但响应中没有可保存的图像");
     const outputs: ImageOutput[] = [];
     for (const image of images) {
       if (image.startsWith("data:")) {
         const parsed = image.match(/^data:([^;]+);base64,(.+)$/);
-        if (!parsed) continue;
-        outputs.push({ bytes: Buffer.from(parsed[2], "base64"), mediaType: parsed[1] });
+        if (parsed) outputs.push({ bytes: Buffer.from(parsed[2], "base64"), mediaType: parsed[1] });
       } else if (/^https?:\/\//i.test(image)) {
-        const imageUrl = new URL(image);
-        if (imageUrl.protocol !== "https:" || imageUrl.username || imageUrl.password || !/(^|\.)aliyuncs\.com$|(^|\.)aliyun\.com$/i.test(imageUrl.hostname)) throw new Error("百炼返回了不受支持的图片地址");
-        const file = await fetch(imageUrl, { signal: AbortSignal.timeout(60_000) });
-        if (!file.ok) throw new Error("无法下载百炼返回的临时图片");
-        const mediaType = file.headers.get("content-type")?.split(";")[0] || "image/png";
-        const contentLength = Number(file.headers.get("content-length") || 0);
-        if (contentLength > MAX_GENERATED_BYTES) throw new Error("模型返回的图片超过单文件保存容量");
-        const bytes = Buffer.from(await file.arrayBuffer());
-        if (bytes.length > MAX_GENERATED_BYTES) throw new Error("模型返回的图片超过单文件保存容量");
-        outputs.push({ bytes, mediaType });
+        outputs.push(await downloadRemoteImage(image, ["aliyuncs.com", "aliyun.com"]));
       } else {
         outputs.push({ bytes: Buffer.from(image, "base64"), mediaType: "image/png" });
       }
     }
     const usage = body.usage as Record<string, unknown> | undefined;
     return {
-      outputs,
+      outputs: outputs.filter((item) => item.bytes.length > 0),
       requestId: stringValue(body.request_id) || stringValue(body.requestId),
       usage: {
         requestId: stringValue(body.request_id) || undefined, imageCount: outputs.length,
@@ -215,23 +253,18 @@ class BailianAdapter implements ProviderAdapter {
 }
 
 class GeminiAdapter implements ProviderAdapter {
-  constructor(private apiKey: string, private endpoint: string, private config: Record<string, unknown>) {}
-  generateTextToImage(input: Parameters<ProviderAdapter["generateTextToImage"]>[0]) {
-    return this.call({ ...input, image: null, mediaType: null });
-  }
-  editImage(input: Parameters<ProviderAdapter["editImage"]>[0]) {
-    return this.call({ ...input, image: input.image, mediaType: input.mediaType });
-  }
-  private async call(input: { prompt: string; count: number; aspectRatio: string; imageSize: string; image: Buffer | null; mediaType: string | null }): Promise<ProviderResult> {
+  constructor(private apiKey: string, private endpoint: string, private modelId: string) {}
+  generateTextToImage(input: Parameters<ProviderAdapter["generateTextToImage"]>[0]) { return this.call({ ...input, image: null, mediaType: null }); }
+  editImage(input: Parameters<ProviderAdapter["editImage"]>[0]) { return this.call({ ...input, image: input.image, mediaType: input.mediaType }); }
+  private async call(input: ImageInput): Promise<ProviderResult> {
     const endpoint = this.endpoint.replace(/\/$/, "");
-    const modelId = typeof this.config.modelId === "string" ? this.config.modelId : "gemini-3.1-flash-image";
     const parts: Array<Record<string, unknown>> = [{ text: input.prompt }];
     if (input.image) parts.unshift({ inlineData: { mimeType: input.mediaType, data: input.image.toString("base64") } });
     const outputs: ImageOutput[] = [];
     let lastUsage: Record<string, unknown> = {};
     let requestId: string | undefined;
     for (let index = 0; index < input.count; index++) {
-      const response = await fetch(`${endpoint}/models/${encodeURIComponent(modelId)}:generateContent`, {
+      const response = await fetch(`${endpoint}/models/${encodeURIComponent(this.modelId)}:generateContent`, {
         method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
         body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseModalities: ["TEXT", "IMAGE"], imageConfig: { aspectRatio: input.aspectRatio, imageSize: input.imageSize } } }),
         signal: AbortSignal.timeout(600_000), cache: "no-store",
@@ -255,6 +288,45 @@ class GeminiAdapter implements ProviderAdapter {
   }
 }
 
+class ZhipuAdapter implements ProviderAdapter {
+  constructor(private apiKey: string, private endpoint: string, private modelId: string) {}
+  generateTextToImage(input: Parameters<ProviderAdapter["generateTextToImage"]>[0]) { return this.call(input); }
+  editImage(): Promise<ProviderResult> { return Promise.reject(new Error("GLM-Image 当前仅支持文生图")); }
+  private async call(input: Parameters<ProviderAdapter["generateTextToImage"]>[0]): Promise<ProviderResult> {
+    const endpoint = this.endpoint.replace(/\/$/, "").replace(/\/images\/generations$/, "");
+    const response = await fetch(`${endpoint}/images/generations`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify({ model: this.modelId, prompt: input.prompt, size: glmSize(input.aspectRatio, input.imageSize), n: 1, response_format: "url" }),
+      signal: AbortSignal.timeout(600_000), cache: "no-store",
+    });
+    const body = await response.json() as Record<string, unknown>;
+    if (!response.ok) throw new Error(providerMessage(body, response.status));
+    const data = body.data as Array<Record<string, unknown>> | undefined;
+    const item = data?.[0];
+    if (!item) throw new Error("智谱调用成功但响应中没有可保存的图像");
+    const image = stringValue(item.url) || stringValue(item.b64_json);
+    if (!image) throw new Error("智谱返回结果中没有图像地址");
+    const output = image.startsWith("http")
+      ? await downloadRemoteImage(image, ["bigmodel.cn", "bigmodel-file.com"])
+      : { bytes: Buffer.from(image, "base64"), mediaType: "image/png" };
+    return { outputs: [output], requestId: stringValue(body.id) || stringValue(body.request_id), usage: { imageCount: 1, raw: (body.usage as Record<string, unknown>) || {} } };
+  }
+}
+
+async function downloadRemoteImage(url: string, allowedDomains: string[]): Promise<ImageOutput> {
+  const imageUrl = new URL(url);
+  const allowed = allowedDomains.some((domain) => imageUrl.hostname === domain || imageUrl.hostname.endsWith(`.${domain}`));
+  if (imageUrl.protocol !== "https:" || imageUrl.username || imageUrl.password || !allowed) throw new Error("模型返回了不受支持的图片地址");
+  const file = await fetch(imageUrl, { signal: AbortSignal.timeout(60_000), cache: "no-store" });
+  if (!file.ok) throw new Error("无法下载供应商返回的临时图片");
+  const mediaType = file.headers.get("content-type")?.split(";")[0] || "image/png";
+  const contentLength = Number(file.headers.get("content-length") || 0);
+  if (contentLength > MAX_GENERATED_BYTES) throw new Error("模型返回的图片超过单文件保存容量");
+  const bytes = Buffer.from(await file.arrayBuffer());
+  if (bytes.length > MAX_GENERATED_BYTES) throw new Error("模型返回的图片超过单文件保存容量");
+  return { bytes, mediaType };
+}
+
 export function qwenSize(aspectRatio: string, imageSize: string) {
   const [a, b] = aspectRatio.split(":").map(Number);
   if (!a || !b) return "1024*1024";
@@ -262,6 +334,16 @@ export function qwenSize(aspectRatio: string, imageSize: string) {
   const width = a >= b ? maxSide : Math.round(maxSide * a / b);
   const height = b >= a ? maxSide : Math.round(maxSide * b / a);
   return `${width}*${height}`;
+}
+
+export function glmSize(aspectRatio: string, imageSize: string) {
+  const [a, b] = aspectRatio.split(":").map(Number);
+  if (!a || !b) return imageSize === "2K" ? "2048x2048" : "1024x1024";
+  const maxSide = imageSize === "2K" ? 2048 : 1024;
+  const roundTo32 = (value: number) => Math.max(512, Math.min(2048, Math.round(value / 32) * 32));
+  const width = roundTo32(a >= b ? maxSide : maxSide * a / b);
+  const height = roundTo32(b >= a ? maxSide : maxSide * b / a);
+  return `${width}x${height}`;
 }
 
 function providerMessage(body: Record<string, unknown>, status: number) {

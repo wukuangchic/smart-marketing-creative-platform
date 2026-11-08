@@ -14,7 +14,7 @@ describe("Qwen Image adapter", () => {
       usage: { output_width: 1024, output_height: 1024, output_image_count: 1 },
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const adapter = createAdapter("bailian", "secret-key", "https://workspace.cn-beijing.maas.aliyuncs.com");
+    const adapter = createAdapter("bailian", "qwen-image-3.0-pro", "secret-key", "https://workspace.cn-beijing.maas.aliyuncs.com");
     const result = await adapter.generateTextToImage({ prompt: "测试画面", count: 1, aspectRatio: "1:1", imageSize: "1K" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -29,7 +29,7 @@ describe("Qwen Image adapter", () => {
   it("includes a single reference image for image editing", async () => {
     const fetchMock = vi.fn().mockResolvedValue(response({ output: { choices: [{ message: { content: [{ image: `data:image/png;base64,${pngData}` }] } }] }, usage: {} }));
     vi.stubGlobal("fetch", fetchMock);
-    const adapter = createAdapter("bailian", "secret-key", "https://workspace.cn-beijing.maas.aliyuncs.com");
+    const adapter = createAdapter("bailian", "qwen-image-3.0-pro", "secret-key", "https://workspace.cn-beijing.maas.aliyuncs.com");
     await adapter.editImage({ prompt: "修改背景", count: 1, aspectRatio: "4:3", imageSize: "2K", image: Buffer.from("reference"), mediaType: "image/png" });
     const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
     const body = JSON.parse(String(request.body));
@@ -47,7 +47,7 @@ describe("Gemini Image adapter", () => {
       usageMetadata: { promptTokenCount: 3, candidatesTokenCount: 5 },
     }));
     vi.stubGlobal("fetch", fetchMock);
-    const adapter = createAdapter("gemini", "secret-key", "https://generativelanguage.googleapis.com/v1beta", { modelId: "gemini-test-image" });
+    const adapter = createAdapter("gemini", "gemini-test-image", "secret-key", "https://generativelanguage.googleapis.com/v1beta");
     const result = await adapter.generateTextToImage({ prompt: "一张插画", count: 1, aspectRatio: "16:9", imageSize: "2K" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);

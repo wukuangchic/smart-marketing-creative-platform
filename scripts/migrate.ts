@@ -1,4 +1,5 @@
 import { pool } from "../src/server/db.js";
+import { MODELS, PROVIDERS } from "../src/server/models.js";
 const DEV_USER_ID = "00000000-0000-4000-8000-000000000001";
 
 const schema = `
@@ -22,7 +23,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS provider_configs (
-  provider text PRIMARY KEY CHECK (provider IN ('bailian','gemini')),
+  provider text PRIMARY KEY CHECK (provider IN ('bailian','gemini','zhipu')),
   enabled boolean NOT NULL DEFAULT false,
   endpoint text,
   api_key_ciphertext text,
@@ -69,7 +70,7 @@ CREATE INDEX IF NOT EXISTS generation_tasks_created_idx ON generation_tasks(crea
 CREATE TABLE IF NOT EXISTS provider_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   task_id uuid NOT NULL REFERENCES generation_tasks(id) ON DELETE CASCADE,
-  provider text NOT NULL CHECK (provider IN ('bailian','gemini')),
+  provider text NOT NULL CHECK (provider IN ('bailian','gemini','zhipu')),
   model_key text NOT NULL REFERENCES provider_models(model_key),
   model_id text NOT NULL,
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','unknown')),
@@ -135,6 +136,31 @@ INSERT INTO schema_migrations(name) VALUES ('001_initial') ON CONFLICT DO NOTHIN
 
 try {
   await pool.query(schema);
+  // Upgrade the original two-provider constraints without disturbing existing rows.
+  await pool.query(`ALTER TABLE provider_configs DROP CONSTRAINT IF EXISTS provider_configs_provider_check`);
+  await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu'))`);
+  await pool.query(`ALTER TABLE provider_runs DROP CONSTRAINT IF EXISTS provider_runs_provider_check`);
+  await pool.query(`ALTER TABLE provider_runs ADD CONSTRAINT provider_runs_provider_check CHECK (provider IN ('bailian','gemini','zhipu'))`);
+
+  for (const [provider, config] of Object.entries(PROVIDERS)) {
+    await pool.query(
+      `INSERT INTO provider_configs(provider,enabled,endpoint,config) VALUES ($1,false,$2,'{}')
+       ON CONFLICT (provider) DO UPDATE SET endpoint=COALESCE(provider_configs.endpoint,EXCLUDED.endpoint)`,
+      [provider, config.defaultEndpoint],
+    );
+  }
+  for (const model of MODELS) {
+    await pool.query(
+      `INSERT INTO provider_models(model_key,provider,model_id,display_name,max_images,pricing)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (model_key) DO UPDATE SET display_name=EXCLUDED.display_name,
+         max_images=EXCLUDED.max_images,
+         pricing=CASE WHEN provider_models.pricing='{}'::jsonb THEN EXCLUDED.pricing ELSE provider_models.pricing END,
+         updated_at=now()`,
+      [model.key, model.provider, model.modelId, model.name, model.maxImages, JSON.stringify(model.defaultPricing)],
+    );
+  }
+  await pool.query("INSERT INTO schema_migrations(name) VALUES ('002_image_model_catalog') ON CONFLICT DO NOTHING");
   if (process.env.NODE_ENV !== "production" && process.env.DEV_AUTH_BYPASS === "1") {
     await pool.query(
       `INSERT INTO users(id,feishu_open_id,display_name,role) VALUES ($1,'dev-open-id','本地体验用户','admin') ON CONFLICT(id) DO NOTHING`,

@@ -36,6 +36,10 @@ export async function POST(request: Request) {
     for (const requested of parsed.data.models) {
       const model = MODELS.find((item) => item.key === requested.modelKey);
       if (!model || requested.count > model.maxImages) return NextResponse.json({ error: "所选模型或图片张数超出模型能力" }, { status: 400 });
+      if (parsed.data.mode === "text-to-image" && !model.supportsTextToImage) return NextResponse.json({ error: `${model.name} 不支持文生图` }, { status: 400 });
+      if (parsed.data.mode === "image-to-image" && !model.supportsImageToImage) return NextResponse.json({ error: `${model.name} 不支持图生图，请切换文生图模式或更换模型` }, { status: 400 });
+      if (!model.supportedSizes.includes(parsed.data.settings.imageSize)) return NextResponse.json({ error: `${model.name} 不支持 ${parsed.data.settings.imageSize} 尺寸` }, { status: 400 });
+      if ("maxPromptChars" in model && parsed.data.prompt.length > model.maxPromptChars) return NextResponse.json({ error: `${model.name} 的提示词最多支持 ${model.maxPromptChars} 个字符` }, { status: 400 });
       const configured = await query<{ enabled: boolean }>("SELECT p.enabled AND m.enabled AS enabled FROM provider_configs p JOIN provider_models m ON m.provider=p.provider WHERE m.model_key=$1", [requested.modelKey]);
       if (!configured.rows[0]?.enabled) return NextResponse.json({ error: `${model.name} 尚未由管理员启用或配置 API 密钥` }, { status: 409 });
     }
