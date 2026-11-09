@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, stat, statfs, writeFile, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
+import sharp from "sharp";
 import { HttpError } from "./errors";
 
 const root = path.resolve(/*turbopackIgnore: true*/ process.env.MEDIA_ROOT || "./data/media");
@@ -40,6 +41,16 @@ export async function storeGenerated(bytes: Uint8Array, mediaType: string, owner
   await writeFile(target, bytes, { flag: "wx", mode: 0o640 });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   return { id, ownerId, relativePath, mediaType, size: bytes.length, sha256, originalName: `generated${ext}` };
+}
+
+export async function resizeGenerated(bytes: Buffer, mediaType: string, width: number, height: number) {
+  const format = mediaType === "image/jpeg" ? "jpeg" : mediaType === "image/webp" ? "webp" : "png";
+  const resized = await sharp(bytes, { failOn: "error" })
+    .rotate()
+    .resize(width, height, { fit: "cover", position: "attention" })
+    .toFormat(format)
+    .toBuffer();
+  return { bytes: resized, mediaType, width, height };
 }
 
 export async function readMedia(relativePath: string) {

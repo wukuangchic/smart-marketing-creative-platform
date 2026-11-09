@@ -51,7 +51,7 @@
 
 ## DeepSeek
 
-本次核对的官方 API 文档提供图像输入与理解能力，没有图片生成输出模型，因此不把 `Deepseek_key` 配成生图服务。若后续需要识图、素材分析或提示词辅助，可单独规划视觉理解接入。[DeepSeek Vision API](https://api-docs.deepseek.com/guides/vision/)
+DeepSeek 不作为图片生成模型。工作台提示词重构使用官方 OpenAI 兼容接口的 `deepseek-flash`（当前模型版本 DeepSeek-V4.1-Flash-1017），按 Token 计费。官方页面列出的标准价格会区分缓存命中/未命中和峰谷时段：缓存未命中输入约 $0.15–$0.30 / 百万 Token，输出约 $0.60–$1.20 / 百万 Token；缓存命中输入约 $0.003–$0.006 / 百万 Token。此价格易变，部署使用前应以[官方模型与价格页面](https://api-docs.deepseek.com/quick_start/pricing/)为准；接口和模型名见[官方 Chat Completions 文档](https://api-docs.deepseek.com/api/create-chat-completion/)。提示词重构的 Token 用量记入审计日志，目前不并入图片逐次成本统计。
 
 ## 成本估算边界
 

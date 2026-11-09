@@ -1,7 +1,7 @@
 import { decryptSecret } from "./crypto";
 import { query } from "./db";
-import { MODELS } from "./models";
-import { readMedia, removeMedia, storeGenerated } from "./media";
+import { MODELS, nativeImageSize } from "./models";
+import { readMedia, removeMedia, resizeGenerated, storeGenerated } from "./media";
 import type { ProviderSlug } from "./types";
 
 export interface ImageOutput {
@@ -37,7 +37,7 @@ const MAX_GENERATED_BYTES = 30 * 1024 * 1024;
 export async function runProviderRun(runId: string) {
   const runResult = await query<{
     run_id: string; task_id: string; provider: ProviderSlug; model_key: string; model_id: string;
-    requested_count: number; mode: "text-to-image" | "image-to-image"; prompt: string; settings: { aspectRatio: string; imageSize: string };
+    requested_count: number; mode: "text-to-image" | "image-to-image"; prompt: string; settings: { aspectRatio: string; imageSize: string; targetWidth?: number; targetHeight?: number };
     input_asset_id: string | null; creator_id: string;
   }>(
     `SELECT r.id AS run_id,r.task_id,r.provider,r.model_key,r.model_id,r.requested_count,
@@ -58,6 +58,9 @@ export async function runProviderRun(runId: string) {
     if (!config?.enabled || !config.api_key_ciphertext) throw new Error("管理员尚未配置此模型的 API 凭证");
     const model = MODELS.find((item) => item.key === run.model_key);
     if (!model) throw new Error("模型配置不存在");
+    const targetWidth = run.settings.targetWidth || 1024;
+    const targetHeight = run.settings.targetHeight || 1024;
+    const providerImageSize = nativeImageSize(model, targetWidth, targetHeight);
     const apiKey = decryptSecret(config.api_key_ciphertext);
     apiKeyForRedaction = apiKey;
     const adapter = createAdapter(run.provider, run.model_id, apiKey, config.endpoint || "", config.config || {});
@@ -68,13 +71,20 @@ export async function runProviderRun(runId: string) {
       const image = await readMedia(input.rows[0].relative_path);
       providerResult = await adapter.editImage({
         prompt: run.prompt, count: run.requested_count, aspectRatio: run.settings.aspectRatio || "1:1",
-        imageSize: run.settings.imageSize || "1K", image, mediaType: input.rows[0].media_type,
+        imageSize: providerImageSize, image, mediaType: input.rows[0].media_type,
       });
     } else {
       providerResult = await adapter.generateTextToImage({
         prompt: run.prompt, count: run.requested_count, aspectRatio: run.settings.aspectRatio || "1:1",
-        imageSize: run.settings.imageSize || "1K",
+        imageSize: providerImageSize,
       });
+    }
+    if (run.settings.targetWidth && run.settings.targetHeight) {
+      providerResult.outputs = await Promise.all(providerResult.outputs.map((output) =>
+        resizeGenerated(output.bytes, output.mediaType, targetWidth, targetHeight),
+      ));
+      providerResult.usage.outputWidth = targetWidth;
+      providerResult.usage.outputHeight = targetHeight;
     }
     for (const output of providerResult.outputs) {
       const asset = await storeGenerated(output.bytes, output.mediaType, run.creator_id);
@@ -96,7 +106,7 @@ export async function runProviderRun(runId: string) {
       } finally { client.release(); }
     }
     const pricingResult = await query<{ pricing: Record<string, unknown> }>("SELECT pricing FROM provider_models WHERE model_key=$1", [run.model_key]);
-    const price = estimateCost(pricingResult.rows[0]?.pricing || {}, run.settings.imageSize, providerResult.outputs.length);
+    const price = estimateCost(pricingResult.rows[0]?.pricing || {}, providerImageSize, providerResult.outputs.length);
     const fx = price ? await query<{ rate_to_cny: string }>(
       "SELECT rate_to_cny FROM exchange_rates WHERE currency=$1 AND effective_date<=COALESCE((SELECT started_at::date FROM provider_runs WHERE id=$2),(SELECT created_at::date FROM provider_runs WHERE id=$2),current_date) ORDER BY effective_date DESC LIMIT 1", [price.currency, runId],
     ) : null;

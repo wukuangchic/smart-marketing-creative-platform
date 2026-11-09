@@ -1,7 +1,7 @@
 import { pool, query } from "../src/server/db.js";
 import { encryptSecret } from "../src/server/crypto.js";
 
-type ProviderKeyInput = Partial<Record<"bailian" | "gemini" | "zhipu", string>>;
+type ProviderKeyInput = Partial<Record<"bailian" | "gemini" | "zhipu" | "deepseek", string>>;
 
 async function readInput() {
   const chunks: Buffer[] = [];
@@ -11,8 +11,8 @@ async function readInput() {
 
 try {
   const values = await readInput();
-  const entries = Object.entries(values).filter((entry): entry is ["bailian" | "gemini" | "zhipu", string] =>
-    ["bailian", "gemini", "zhipu"].includes(entry[0]) && typeof entry[1] === "string" && entry[1].trim().length > 0,
+  const entries = Object.entries(values).filter((entry): entry is ["bailian" | "gemini" | "zhipu" | "deepseek", string] =>
+    ["bailian", "gemini", "zhipu", "deepseek"].includes(entry[0]) && typeof entry[1] === "string" && entry[1].trim().length > 0,
   );
   if (entries.length === 0) throw new Error("No provider credentials were supplied");
   const administrator = await query<{ id: string }>("SELECT id FROM users WHERE role='admin' AND active=true ORDER BY created_at LIMIT 1");
@@ -38,7 +38,7 @@ try {
   } finally {
     client.release();
   }
-  console.log(`Encrypted and saved credentials for ${entries.length} image-generation providers.`);
+  console.log(`Encrypted and saved credentials for ${entries.length} providers.`);
 } catch {
   console.error("Provider credential import failed. Check server encryption and provider configuration, then retry.");
   process.exitCode = 1;

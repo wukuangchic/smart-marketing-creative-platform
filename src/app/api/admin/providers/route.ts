@@ -7,7 +7,7 @@ import { MODELS, PROVIDERS } from "@/server/models";
 import { jsonError, sameOrigin } from "@/server/http";
 
 const priceField = z.string().max(32).refine((value) => value === "" || (/^\d+(\.\d{1,8})?$/.test(value) && Number.isFinite(Number(value)) && Number(value) >= 0), "价格必须为非负数字，最多 8 位小数");
-const providerEnum = z.enum(["bailian", "gemini", "zhipu"]);
+const providerEnum = z.enum(["bailian", "gemini", "zhipu", "deepseek"]);
 const bodySchema = z.object({
   provider: providerEnum,
   enabled: z.boolean(),

@@ -1,9 +1,10 @@
-import type { ProviderSlug } from "./types";
+import type { ProviderConfigSlug, ProviderSlug } from "./types";
 
-export const PROVIDERS: Record<ProviderSlug, { name: string; shortName: string; defaultEndpoint: string; currency: "CNY" | "USD" }> = {
+export const PROVIDERS: Record<ProviderConfigSlug, { name: string; shortName: string; defaultEndpoint: string; currency: "CNY" | "USD" }> = {
   bailian: { name: "阿里云百炼", shortName: "百炼", defaultEndpoint: "https://dashscope.aliyuncs.com", currency: "CNY" },
   gemini: { name: "Google Gemini API", shortName: "Gemini", defaultEndpoint: "https://generativelanguage.googleapis.com/v1beta", currency: "USD" },
   zhipu: { name: "智谱 AI", shortName: "智谱", defaultEndpoint: "https://open.bigmodel.cn/api/paas/v4", currency: "CNY" },
+  deepseek: { name: "DeepSeek API", shortName: "DeepSeek", defaultEndpoint: "https://api.deepseek.com", currency: "USD" },
 };
 
 const qwen = (key: string, modelId: string, name: string, perImage: Record<string, string>, maxImages = 6) => ({
@@ -84,4 +85,11 @@ export function getModel(key: string) {
 
 export function getProviderModels(provider: ProviderSlug) {
   return MODELS.filter((model) => model.provider === provider);
+}
+
+export function nativeImageSize(model: (typeof MODELS)[number], targetWidth: number, targetHeight: number): "1K" | "2K" {
+  const requested = Math.max(targetWidth, targetHeight) > 1536 ? "2K" : "1K";
+  const sizes = model.supportedSizes as readonly ("1K" | "2K")[];
+  if (sizes.includes(requested)) return requested;
+  return sizes.includes("1K") ? "1K" : "2K";
 }

@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS provider_configs (
-  provider text PRIMARY KEY CHECK (provider IN ('bailian','gemini','zhipu')),
+  provider text PRIMARY KEY CHECK (provider IN ('bailian','gemini','zhipu','deepseek')),
   enabled boolean NOT NULL DEFAULT false,
   endpoint text,
   api_key_ciphertext text,
@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS exchange_rates (
   PRIMARY KEY(currency,effective_date)
 );
 INSERT INTO exchange_rates(currency,effective_date,rate_to_cny) VALUES ('CNY','2000-01-01',1) ON CONFLICT DO NOTHING;
-INSERT INTO provider_configs(provider,enabled,config) VALUES ('bailian',false,'{}'),('gemini',false,'{}') ON CONFLICT DO NOTHING;
+INSERT INTO provider_configs(provider,enabled,config) VALUES ('bailian',false,'{}'),('gemini',false,'{}'),('zhipu',false,'{}'),('deepseek',false,'{}') ON CONFLICT DO NOTHING;
 INSERT INTO provider_models(model_key,provider,model_id,display_name,max_images,pricing) VALUES
   ('bailian-qwen-image-3-pro','bailian','qwen-image-3.0-pro','Qwen Image 3.0 Pro',6,'{}'),
   ('gemini-3-1-flash-image','gemini','gemini-3.1-flash-image','Gemini 3.1 Flash Image',1,'{}')
@@ -138,7 +138,7 @@ try {
   await pool.query(schema);
   // Upgrade the original two-provider constraints without disturbing existing rows.
   await pool.query(`ALTER TABLE provider_configs DROP CONSTRAINT IF EXISTS provider_configs_provider_check`);
-  await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu'))`);
+  await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','deepseek'))`);
   await pool.query(`ALTER TABLE provider_runs DROP CONSTRAINT IF EXISTS provider_runs_provider_check`);
   await pool.query(`ALTER TABLE provider_runs ADD CONSTRAINT provider_runs_provider_check CHECK (provider IN ('bailian','gemini','zhipu'))`);
 

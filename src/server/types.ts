@@ -2,6 +2,7 @@ export type GenerationMode = "text-to-image" | "image-to-image";
 export type TaskStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "unknown";
 export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "unknown";
 export type ProviderSlug = "bailian" | "gemini" | "zhipu";
+export type ProviderConfigSlug = ProviderSlug | "deepseek";
 
 export interface GenerationRequest {
   mode: GenerationMode;
@@ -11,6 +12,8 @@ export interface GenerationRequest {
   settings: {
     aspectRatio: string;
     imageSize: "1K" | "2K";
+    targetWidth: number;
+    targetHeight: number;
   };
 }
 

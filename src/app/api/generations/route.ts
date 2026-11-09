@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { currentUser, requireUser } from "@/server/auth";
 import { query, pool } from "@/server/db";
-import { MODELS, SHARED_ASPECT_RATIOS, SHARED_IMAGE_SIZES } from "@/server/models";
+import { MODELS, SHARED_ASPECT_RATIOS } from "@/server/models";
 import { storeUpload, storageStatus } from "@/server/media";
 import { getBoss } from "@/server/queue";
 import { jsonError, sameOrigin } from "@/server/http";
@@ -11,8 +11,13 @@ import { jsonError, sameOrigin } from "@/server/http";
 const schema = z.object({
   mode: z.enum(["text-to-image", "image-to-image"]),
   prompt: z.string().trim().min(1).max(18000),
-  models: z.array(z.object({ modelKey: z.string(), count: z.coerce.number().int().min(1).max(20) })).min(1).max(2),
-  settings: z.object({ aspectRatio: z.enum(SHARED_ASPECT_RATIOS), imageSize: z.enum(SHARED_IMAGE_SIZES) }),
+  models: z.array(z.object({ modelKey: z.string(), count: z.coerce.number().int().min(1).max(20) })).min(1).max(MODELS.length),
+  settings: z.object({
+    aspectRatio: z.enum(SHARED_ASPECT_RATIOS),
+    targetWidth: z.coerce.number().int().min(256).max(4096),
+    targetHeight: z.coerce.number().int().min(256).max(4096),
+  }),
+  confirmed: z.literal("true"),
 });
 
 export async function POST(request: Request) {
@@ -26,7 +31,7 @@ export async function POST(request: Request) {
     const usage = await storageStatus();
     if (usage.blocked) return NextResponse.json({ error: "图片存储空间已达到暂停阈值，请联系管理员扩容后再生成" }, { status: 507 });
     const form = await request.formData();
-    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")) });
+    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "生成参数无效" }, { status: 400 });
     const inputFile = form.get("image");
     if (parsed.data.mode === "image-to-image" && !(inputFile instanceof File)) return NextResponse.json({ error: "图生图需要上传一张原图" }, { status: 400 });
@@ -38,11 +43,12 @@ export async function POST(request: Request) {
       if (!model || requested.count > model.maxImages) return NextResponse.json({ error: "所选模型或图片张数超出模型能力" }, { status: 400 });
       if (parsed.data.mode === "text-to-image" && !model.supportsTextToImage) return NextResponse.json({ error: `${model.name} 不支持文生图` }, { status: 400 });
       if (parsed.data.mode === "image-to-image" && !model.supportsImageToImage) return NextResponse.json({ error: `${model.name} 不支持图生图，请切换文生图模式或更换模型` }, { status: 400 });
-      if (!(model.supportedSizes as readonly ("1K" | "2K")[]).includes(parsed.data.settings.imageSize)) return NextResponse.json({ error: `${model.name} 不支持 ${parsed.data.settings.imageSize} 尺寸` }, { status: 400 });
       if ("maxPromptChars" in model && parsed.data.prompt.length > model.maxPromptChars) return NextResponse.json({ error: `${model.name} 的提示词最多支持 ${model.maxPromptChars} 个字符` }, { status: 400 });
       const configured = await query<{ enabled: boolean }>("SELECT p.enabled AND m.enabled AS enabled FROM provider_configs p JOIN provider_models m ON m.provider=p.provider WHERE m.model_key=$1", [requested.modelKey]);
       if (!configured.rows[0]?.enabled) return NextResponse.json({ error: `${model.name} 尚未由管理员启用或配置 API 密钥` }, { status: 409 });
     }
+    const imageSize = Math.max(parsed.data.settings.targetWidth, parsed.data.settings.targetHeight) > 1536 ? "2K" : "1K";
+    const taskSettings = { ...parsed.data.settings, imageSize };
     if (parsed.data.mode === "image-to-image") uploaded = await storeUpload(inputFile as File, user.id);
     const taskId = randomUUID();
     const assetId = uploaded?.id || null;
@@ -57,7 +63,7 @@ export async function POST(request: Request) {
       );
       await dbClient.query(
         `INSERT INTO generation_tasks(id,creator_id,mode,prompt,input_asset_id,settings,status) VALUES ($1,$2,$3,$4,$5,$6,'queued')`,
-        [taskId, user.id, parsed.data.mode, parsed.data.prompt, assetId, JSON.stringify(parsed.data.settings)],
+        [taskId, user.id, parsed.data.mode, parsed.data.prompt, assetId, JSON.stringify(taskSettings)],
       );
       for (const requested of parsed.data.models) {
         const model = MODELS.find((item) => item.key === requested.modelKey)!;
