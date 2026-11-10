@@ -18,6 +18,7 @@ const schema = z.object({
     return firstToken >= 0 && firstToken === value.lastIndexOf("{标识}") && !value.includes("{序号}");
   }, "图片命名必须且只能包含一次 {标识}；序号已包含在 8 位编号中"),
   promptPrefix: z.string().optional().nullable(),
+  tagIds: z.array(z.string().uuid()).optional(),
   tagId: z.string().uuid().nullable().optional(),
   models: z.array(z.object({ modelKey: z.string(), count: z.coerce.number().int().min(1).max(20) })).min(1).max(MODELS.length),
   settings: z.object({
@@ -39,8 +40,9 @@ export async function POST(request: Request) {
     const usage = await storageStatus();
     if (usage.blocked) return NextResponse.json({ error: "图片存储空间已达到暂停阈值，请联系管理员扩容后再生成" }, { status: 507 });
     const form = await request.formData();
-    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), nameTemplate: form.get("nameTemplate"), promptPrefix: String(form.get("promptPrefix") || "") || null, tagId: String(form.get("tagId") || "") || null, models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
+    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), nameTemplate: form.get("nameTemplate"), promptPrefix: String(form.get("promptPrefix") || "") || null, tagIds: JSON.parse(String(form.get("tagIds") || "[]")), tagId: String(form.get("tagId") || "") || null, models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "生成参数无效" }, { status: 400 });
+    const tagIds = [...new Set([...(parsed.data.tagIds || []), ...(parsed.data.tagId ? [parsed.data.tagId] : [])])];
     if (parsed.data.promptPrefix && !isPromptPrefix(parsed.data.promptPrefix)) return NextResponse.json({ error: "提示词标识前缀无效，请重新选择历史提示词" }, { status: 400 });
     if (parsed.data.promptPrefix) {
       const priorPrompts = await query<{ identifier: string | null }>("SELECT identifier FROM generation_tasks WHERE prompt=$1 ORDER BY created_at DESC LIMIT 100", [parsed.data.prompt]);
@@ -48,9 +50,9 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: "历史提示词与标识前缀不匹配，请重新选择" }, { status: 400 });
       }
     }
-    if (parsed.data.tagId) {
-      const tag = await query("SELECT id FROM creative_tags WHERE id=$1", [parsed.data.tagId]);
-      if (!tag.rowCount) return NextResponse.json({ error: "所选分类标签不存在，请刷新后重新选择" }, { status: 400 });
+    if (tagIds.length) {
+      const tags = await query("SELECT id FROM creative_tags WHERE id=ANY($1::uuid[])", [tagIds]);
+      if (tags.rowCount !== tagIds.length) return NextResponse.json({ error: "所选分类标签不存在，请刷新后重新选择" }, { status: 400 });
     }
     const inputFile = form.get("image");
     if (parsed.data.mode === "image-to-image" && !(inputFile instanceof File)) return NextResponse.json({ error: "图生图需要上传一张原图" }, { status: 400 });
@@ -97,7 +99,12 @@ export async function POST(request: Request) {
       await dbClient.query(
         `INSERT INTO generation_tasks(id,creator_id,mode,prompt,name_template,identifier,tag_id,input_asset_id,settings,status)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued')`,
-        [taskId, user.id, parsed.data.mode, parsed.data.prompt, parsed.data.nameTemplate, identifier, parsed.data.tagId || null, assetId, JSON.stringify(taskSettings)],
+        [taskId, user.id, parsed.data.mode, parsed.data.prompt, parsed.data.nameTemplate, identifier, tagIds[0] || null, assetId, JSON.stringify(taskSettings)],
+      );
+      if (tagIds.length) await dbClient.query(
+        `INSERT INTO generation_task_tags(task_id,tag_id)
+         SELECT $1,selected.tag_id FROM unnest($2::uuid[]) AS selected(tag_id)`,
+        [taskId, tagIds],
       );
       for (const requested of parsed.data.models) {
         const model = MODELS.find((item) => item.key === requested.modelKey)!;
@@ -146,7 +153,10 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 100);
     const result = await query(
-      `SELECT t.id,t.mode,t.prompt,t.name_template,t.identifier,t.tag_id,ct.name AS tag_name,t.settings,t.status,t.created_at,t.finished_at,
+      `SELECT t.id,t.mode,t.prompt,t.name_template,t.identifier,t.tag_id,ct.name AS tag_name,
+              COALESCE((SELECT json_agg(json_build_object('id',tag.id,'name',tag.name) ORDER BY lower(tag.name),tag.created_at)
+                        FROM generation_task_tags task_tag JOIN creative_tags tag ON tag.id=task_tag.tag_id WHERE task_tag.task_id=t.id),'[]'::json) AS tags,
+              t.settings,t.status,t.created_at,t.finished_at,
               u.display_name AS creator_name,
               COALESCE((SELECT json_agg(json_build_object('id',a.id,'kind',a.kind,'url','/api/assets/'||a.id,'width',a.width,'height',a.height,'mediaType',a.media_type,'originalName',a.original_name,'identifier',a.identifier) ORDER BY a.created_at)
                         FROM media_assets a WHERE a.task_id=t.id),'[]'::json) AS assets,

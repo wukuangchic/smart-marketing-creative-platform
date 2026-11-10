@@ -3,7 +3,8 @@
 ## 主要对象
 
 - `GenerationRequest`：模式、提示词、参考图、模型选择和共同参数。
-- `GenerationTask`：一次员工提交的任务；图生图只接受一张输入图，可关联一个团队分类标签。
+- `GenerationTask`：一次员工提交的任务；图生图只接受一张输入图，可关联多个团队分类标签。
+- `generation_task_tags`：任务与共享分类标签的多对多关系；迁移时把旧 `generation_tasks.tag_id` 数据复制进来。
 - `GenerationTask.identifier`：新任务保存 4 位提示词前缀；复用历史提示词时沿用其最近前缀，否则生成新的随机前缀。旧任务仍保留原 6 位标识。
 - `GenerationTask.name_template`：图片命名模板可添加自定义前后缀，且必须且只能包含一次 `{标识}`；worker 将标记替换成该图片的完整编号。
 - `MediaAsset.identifier`：新生成的每张图片使用 8 位 Crockford Base32 编号，前 4 位为提示词前缀，后 4 位为该前缀下连续分配的图片序号。文件名按命名模板保存完整编号。
@@ -25,7 +26,7 @@
 ## 分类标签、历史下载与素材库
 
 - `GET /api/tags` 返回团队共享标签；`POST /api/tags` 由登录成员创建或复用同名标签，大小写不敏感。
-- 创作提交只关联一个标签；历史记录显示标签，并为每张生成图片提供使用 `media_assets.original_name` 的单张下载。
+- 创作提交可关联多个标签；历史记录和素材库展示该套创作的全部标签，素材库按所选单个标签筛选；历史记录为每张生成图片提供使用 `media_assets.original_name` 的单张下载。
 - `/materials` 只展示生成结果，不展示图生图输入图。`GET /api/materials` 支持按标识、生成日期和标签筛选，并分页返回缩略图元数据。
 - `POST /api/materials/download` 接受已选结果 ID，验证全部均为生成素材后流式打包 ZIP；每批最多 100 张、总文件大小最多 500 MiB。
 

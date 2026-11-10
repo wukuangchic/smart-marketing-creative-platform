@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Check, Download, Filter, Image as ImageIcon, LoaderCircle, Search, X } from "lucide-react";
 
 type Tag = { id: string; name: string };
-type Material = { id: string; original_name: string; media_type: string; width: number | null; height: number | null; size_bytes: string; created_at: string; identifier: string | null; prompt_prefix: string | null; name_template: string | null; tag_id: string | null; tag_name: string | null; model_id: string | null };
+type Material = { id: string; original_name: string; media_type: string; width: number | null; height: number | null; size_bytes: string; created_at: string; identifier: string | null; prompt_prefix: string | null; name_template: string | null; tag_id: string | null; tag_name: string | null; tags?: Tag[]; model_id: string | null };
 type Filters = { identifier: string; dateFrom: string; dateTo: string; tagId: string };
 const PAGE_SIZE = 60;
 
@@ -91,7 +91,7 @@ export default function MaterialsPage() {
     {loading && !assets.length ? <div className="materials-loading"><LoaderCircle size={20} className="spin" /> 正在加载素材</div> : assets.length ? <div className="materials-grid">{assets.map((asset) => <article className={selected.has(asset.id) ? "material-card selected" : "material-card"} key={asset.id}>
       <label className="material-select" title={selected.has(asset.id) ? "取消选择" : "选择素材"}><input type="checkbox" checked={selected.has(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>{selected.has(asset.id) && <Check size={12} />}</span></label>
       <a className="material-image" href={`/api/assets/${asset.id}`} target="_blank" rel="noreferrer"><img src={`/api/assets/${asset.id}`} alt={asset.original_name} loading="lazy" /></a>
-      <div className="material-meta"><b title={asset.original_name}>{asset.original_name}</b><span>{asset.tag_name || "未分类"} · {asset.identifier || "旧素材"}</span><small>{new Date(asset.created_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}{asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}</small></div>
+      <div className="material-meta"><b title={asset.original_name}>{asset.original_name}</b><span>{asset.tags?.length ? asset.tags.map((tag) => tag.name).join(" · ") : asset.tag_name || "未分类"} · {asset.identifier || "旧素材"}</span><small>{new Date(asset.created_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}{asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}</small></div>
     </article>)}</div> : !loading && <div className="empty-state materials-empty"><ImageIcon size={22} /><b>{filters.identifier || filters.dateFrom || filters.dateTo || filters.tagId ? "没有符合条件的素材" : "素材库还是空的"}</b><span>完成图片创作后，生成结果会自动收录在这里。</span></div>}
     {assets.length < total && <div className="materials-more"><button className="button button-quiet" onClick={() => setOffset((value) => value + PAGE_SIZE)} disabled={loading}>{loading ? "加载中…" : "加载更多"}</button></div>}
   </div>;

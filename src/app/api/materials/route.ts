@@ -36,7 +36,12 @@ export async function GET(request: Request) {
     }
     if (dateFrom) conditions.push(`asset.created_at >= (${add(dateFrom)}::date::timestamp AT TIME ZONE 'Asia/Shanghai')`);
     if (dateTo) conditions.push(`asset.created_at < ((${add(dateTo)}::date + interval '1 day') AT TIME ZONE 'Asia/Shanghai')`);
-    if (tagId) conditions.push(`task.tag_id=${add(tagId)}::uuid`);
+    if (tagId) {
+      const selectedTag = add(tagId);
+      conditions.push(`(task.tag_id=${selectedTag}::uuid OR EXISTS (
+        SELECT 1 FROM generation_task_tags task_tag WHERE task_tag.task_id=task.id AND task_tag.tag_id=${selectedTag}::uuid
+      ))`);
+    }
     const where = conditions.join(" AND ");
     const count = await query<{ total: number }>(
       `SELECT COUNT(*)::int AS total
@@ -47,7 +52,10 @@ export async function GET(request: Request) {
     const pageValues = [...values, PAGE_SIZE, offset];
     const rows = await query(
       `SELECT asset.id,asset.original_name,asset.media_type,asset.width,asset.height,asset.size_bytes,asset.created_at,
-              COALESCE(asset.identifier,task.identifier) AS identifier,task.identifier AS prompt_prefix,task.name_template,task.tag_id,tag.name AS tag_name,run.model_id
+              COALESCE(asset.identifier,task.identifier) AS identifier,task.identifier AS prompt_prefix,task.name_template,task.tag_id,tag.name AS tag_name,
+              COALESCE((SELECT json_agg(json_build_object('id',task_label.id,'name',task_label.name) ORDER BY lower(task_label.name),task_label.created_at)
+                        FROM generation_task_tags task_tag JOIN creative_tags task_label ON task_label.id=task_tag.tag_id WHERE task_tag.task_id=task.id),'[]'::json) AS tags,
+              run.model_id
        FROM media_assets asset
        JOIN generation_tasks task ON task.id=asset.task_id
        LEFT JOIN creative_tags tag ON tag.id=task.tag_id

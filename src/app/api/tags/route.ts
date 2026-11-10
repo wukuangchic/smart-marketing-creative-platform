@@ -10,9 +10,9 @@ export async function GET() {
   try {
     await requireUser();
     const result = await query(
-      `SELECT tag.id,tag.name,tag.created_at,COUNT(task.id)::int AS task_count
+      `SELECT tag.id,tag.name,tag.created_at,COUNT(DISTINCT task_tag.task_id)::int AS task_count
        FROM creative_tags tag
-       LEFT JOIN generation_tasks task ON task.tag_id=tag.id
+       LEFT JOIN generation_task_tags task_tag ON task_tag.tag_id=tag.id
        GROUP BY tag.id
        ORDER BY lower(tag.name),tag.created_at`,
     );
