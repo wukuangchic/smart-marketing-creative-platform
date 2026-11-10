@@ -30,10 +30,7 @@ export async function POST(request: Request) {
       `INSERT INTO creative_tags(name,created_by) VALUES ($1,$2) ON CONFLICT DO NOTHING RETURNING id,name,created_at`,
       [parsed.data.name, user.id],
     );
-    const tag = inserted.rows[0] || (await query<{ id: string; name: string; created_at: string }>(
-      `SELECT id,name,created_at FROM creative_tags WHERE lower(name)=lower($1) LIMIT 1`, [parsed.data.name],
-    )).rows[0];
-    if (!tag) return NextResponse.json({ error: "创建标签失败，请重试" }, { status: 500 });
-    return NextResponse.json({ tag }, { status: inserted.rowCount ? 201 : 200 });
+    if (!inserted.rows[0]) return NextResponse.json({ error: "同名分类标签已存在，请直接选择已有标签" }, { status: 409 });
+    return NextResponse.json({ tag: inserted.rows[0] }, { status: 201 });
   } catch (error) { return jsonError(error); }
 }

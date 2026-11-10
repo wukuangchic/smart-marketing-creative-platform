@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowDownToLine, ArrowUpRight, Clock3, ImagePlus, Search, Trash2 } from "lucide-react";
+import { ArrowUpRight, Clock3, Download, ImagePlus, Search, Trash2 } from "lucide-react";
 
 type Output = { id: string; url: string; originalName: string; width: number | null; height: number | null };
 type Run = { id: string; provider: string; modelKey: string; modelId: string; status: string; imageCount: number; estimatedCost: string | null; currency: string | null; estimatedCostCny: string | null; errorMessage: string | null; outputs: Output[] };
@@ -46,14 +46,11 @@ export default function HistoryPage() {
       ].slice(0, 4);
       return <article className="history-card" key={task.id}>
         <div className="history-main">
-          <div className="history-meta"><span className={task.mode === "image-to-image" ? "history-type edit" : "history-type"}>{task.mode === "image-to-image" ? "图生图" : "文生图"}</span><span>{task.creator_name}</span><span>·</span><span>{new Date(task.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span><span className={`task-pill ${task.status}`}>{task.status === "succeeded" ? "已完成" : task.status === "partial" ? "部分完成" : task.status === "failed" ? "失败" : task.status === "unknown" ? "状态待核实" : "进行中"}</span>{isAdmin && <button className="icon-button history-delete" title="删除这条创作记录" onClick={() => deleteTask(task.id)}><Trash2 size={14} /></button>}</div>
+          <div className="history-meta"><span className={task.mode === "image-to-image" ? "history-type edit" : "history-type"}>{task.mode === "image-to-image" ? "图生图" : "文生图"}</span><span>{task.creator_name}</span><span>·</span><span>{new Date(task.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span><span className={`task-pill ${task.status}`}>{task.status === "succeeded" ? "已完成" : task.status === "partial" ? "部分完成" : task.status === "failed" ? "失败" : task.status === "unknown" ? "状态待核实" : "进行中"}</span>{task.runs.some((run) => run.outputs?.length) && <a className="history-task-download" href={`/api/generations/${task.id}/download`}><Download size={13} /> 下载任务压缩包</a>}{isAdmin && <button className="icon-button history-delete" title="删除这条创作记录" onClick={() => deleteTask(task.id)}><Trash2 size={14} /></button>}</div>
           <p className="history-prompt">{task.prompt}</p>
           <div className="history-tags">{task.runs.map((run) => <span key={run.id}>{run.modelId}</span>)}<span>{task.settings?.aspectRatio || "1:1"} · {task.settings?.imageSize || "1K"}</span>{task.identifier && <span className="history-identifier">{task.identifier.length === 4 ? "提示词前缀" : "标识"} {task.identifier}</span>}{task.tags?.length ? task.tags.map((tag) => <span className="history-category-tag" key={tag.id}>{tag.name}</span>) : task.tag_name && <span className="history-category-tag">{task.tag_name}</span>}{task.name_template && task.identifier && task.name_template !== "{标识}" && <span>{task.name_template.replace("{标识}", task.identifier)}</span>}</div>
         </div>
-        <div className="history-images">{previews.map((asset) => <div className="history-image-entry" key={asset.id}>
-          <a className="history-image-preview" href={asset.url} target="_blank" rel="noreferrer"><img src={asset.url} alt={asset.kind === "input" ? "图生图原图" : asset.originalName} /><span><ArrowUpRight size={13} /></span></a>
-          {asset.kind === "output" && <a className="history-image-download" href={`${asset.url}?download=1`} download={asset.originalName}><ArrowDownToLine size={12} /> 下载</a>}
-        </div>)}</div>
+        <div className="history-images">{previews.map((asset) => <a className="history-image-preview" key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><img src={asset.url} alt={asset.kind === "input" ? "图生图原图" : asset.originalName} /><span><ArrowUpRight size={13} /></span></a>)}</div>
         <div className="history-costs">{task.runs.map((run) => <div key={run.id}><small>{run.modelId.replace("-image", "")}</small><b>{run.estimatedCost ? `${Number(run.estimatedCost).toFixed(4)} ${run.currency}` : "待配置"}</b></div>)}</div>
       </article>;
     })}

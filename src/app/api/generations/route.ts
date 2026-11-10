@@ -14,9 +14,11 @@ const schema = z.object({
   mode: z.enum(["text-to-image", "image-to-image"]),
   prompt: z.string().trim().min(1).max(18000),
   nameTemplate: z.string().trim().min(1).max(120).refine((value) => {
-    const firstToken = value.indexOf("{标识}");
-    return firstToken >= 0 && firstToken === value.lastIndexOf("{标识}") && !value.includes("{序号}");
-  }, "图片命名必须且只能包含一次 {标识}；序号已包含在 8 位编号中"),
+    const tokens = value.match(/\{[^{}]*\}/g) || [];
+    const allowed = new Set(["{标识}", "{日期}", "{模型}", "{员工姓名}"]);
+    const withoutKnownTokens = value.replace(/\{标识\}|\{日期\}|\{模型\}|\{员工姓名\}/g, "");
+    return tokens.filter((token) => token === "{标识}").length === 1 && tokens.every((token) => allowed.has(token)) && !/[{}]/.test(withoutKnownTokens);
+  }, "图片命名必须且只能包含一次 {标识}，其他通配符仅支持 {日期}、{模型} 和 {员工姓名}"),
   promptPrefix: z.string().optional().nullable(),
   tagIds: z.array(z.string().uuid()).optional(),
   tagId: z.string().uuid().nullable().optional(),

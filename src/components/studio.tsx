@@ -64,6 +64,8 @@ export function Studio() {
   const [reusedPromptPrefix, setReusedPromptPrefix] = useState<string | null>(null);
   const [tags, setTags] = useState<CreativeTag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [tagPickerOpen, setTagPickerOpen] = useState(false);
+  const [tagSearch, setTagSearch] = useState("");
   const [newTagName, setNewTagName] = useState("");
   const [savingTag, setSavingTag] = useState(false);
   const [image, setImage] = useState<File | null>(null);
@@ -156,13 +158,16 @@ export function Studio() {
 
   const outputCount = useMemo(() => selected.reduce((sum, model) => sum + (counts[model] || 1), 0), [selected, counts]);
   const isRunning = loading || Boolean(task && ["queued", "running"].includes(task.status));
-  const hasOneIdentifierToken = nameTemplate.includes("{标识}") && nameTemplate.indexOf("{标识}") === nameTemplate.lastIndexOf("{标识}");
-  const containsLegacySequenceToken = nameTemplate.includes("{序号}");
-  const nameTemplateValid = hasOneIdentifierToken && !containsLegacySequenceToken;
+  const nameTokens = nameTemplate.match(/\{[^{}]+\}/g) || [];
+  const allowedNameTokens = ["{标识}", "{日期}", "{模型}", "{员工姓名}"];
+  const hasOneIdentifierToken = nameTokens.filter((token) => token === "{标识}").length === 1;
+  const withoutKnownTokens = nameTemplate.replace(/\{标识\}|\{日期\}|\{模型\}|\{员工姓名\}/g, "");
+  const hasOnlyKnownTokens = nameTokens.every((token) => allowedNameTokens.includes(token)) && !/[{}]/.test(withoutKnownTokens);
+  const nameTemplateValid = hasOneIdentifierToken && hasOnlyKnownTokens;
   const nameTemplateError = !hasOneIdentifierToken
     ? "命名模板必须且只能包含一次 {标识}"
-    : containsLegacySequenceToken
-      ? "序号已包含在 8 位编号中，请删除 {序号}"
+    : !hasOnlyKnownTokens
+      ? "命名模板包含不支持的通配符"
       : "";
   const missingPriceRates = availableModels.some((model) => {
     const pricing = (catalog[model.key]?.pricing || model.defaultPricing) as { currency: string; perImage: Record<string, string | number> };
@@ -199,10 +204,12 @@ export function Studio() {
     try {
       const response = await fetch("/api/tags", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
       const data = await response.json();
+      if (response.status === 409) throw new Error("该分类标签已存在，请从下拉框中选择");
       if (!response.ok) throw new Error(data.error || "标签创建失败");
       setTags((items) => [data.tag, ...items.filter((tag) => tag.id !== data.tag.id)].sort((a, b) => a.name.localeCompare(b.name, "zh-CN")));
       setSelectedTagIds((items) => items.includes(data.tag.id) ? items : [...items, data.tag.id]);
       setNewTagName("");
+      setTagPickerOpen(true);
     } catch (error) { setMessage(error instanceof Error ? error.message : "标签创建失败"); }
     finally { setSavingTag(false); }
   }
@@ -299,10 +306,10 @@ export function Studio() {
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => setFile(event.target.files?.[0])} />
         </div>}
         <div className="prompt-box"><div className="prompt-box-top"><span><MessageSquareText size={14} /> 提示词</span><div className="prompt-top-actions"><span className="prompt-count">{prompt.length} / 18,000</span><button type="button" className="button button-quiet prompt-picker-button" onClick={openPromptPicker}><WandSparkles size={13} /> 历史提示词 · DeepSeek 重构</button></div></div><textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); setReusedPromptPrefix(null); }} placeholder={mode === "text-to-image" ? "例如：一只橘猫坐在复古咖啡馆的窗边，午后阳光洒进来，胶片摄影质感……" : "例如：保持人物和构图不变，把背景改成海边日落，增加柔和的金色逆光……"} maxLength={18000} /><div className="prompt-hints"><span><Sparkles size={13} /> 描述主体、环境、光线和风格</span><span>Enter 换行</span></div></div>
-        <label className="task-name-field"><span>图片命名</span><input value={nameTemplate} onChange={(event) => setNameTemplate(event.target.value)} maxLength={120} aria-invalid={!nameTemplateValid} aria-describedby="name-template-help" /><small id="name-template-help">可在编号前后添加自定义文字，必须且只能包含一次 {"{标识}"}；示例：活动名称-{"{标识}"}。{`{标识}`} 会替换为 8 位编号，复用历史提示词时沿用前 4 位。</small>{!nameTemplateValid && <small className="task-name-error">{nameTemplateError}</small>}</label>
+        <label className="task-name-field"><span>图片命名</span><input value={nameTemplate} onChange={(event) => setNameTemplate(event.target.value)} maxLength={120} aria-invalid={!nameTemplateValid} aria-describedby="name-template-help" /><small id="name-template-help">必须且只能包含一次 {"{标识}"}；可选通配符：{`{日期}`}（任务日期 YYYYMMDD）、{`{模型}`}（供应商模型 ID）、{`{员工姓名}`}。{"例如：创意-{日期}-{模型}-{员工姓名}-{标识}。"}</small>{!nameTemplateValid && <small className="task-name-error">{nameTemplateError}</small>}</label>
         <div className="category-field">
-          <div className="category-picker"><span className="category-field-label">分类标签 <small>可多选</small></span><div className="category-tag-options">{tags.map((tag) => { const checked = selectedTagIds.includes(tag.id); return <button key={tag.id} type="button" className={checked ? "category-tag-option selected" : "category-tag-option"} aria-pressed={checked} onClick={() => toggleTag(tag.id)}>{checked && <Check size={11} />}{tag.name}</button>; })}{!tags.length && <small className="category-tag-empty">还没有分类标签，可在右侧新建</small>}</div><small className="category-selection-count">{selectedTagIds.length ? `已选 ${selectedTagIds.length} 个标签` : "未选择标签"}</small></div>
-          <div className="category-field-create"><input value={newTagName} onChange={(event) => setNewTagName(event.target.value)} maxLength={40} placeholder="新建分类标签" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void createTag(); } }} /><button type="button" className="button button-quiet" onClick={() => void createTag()} disabled={savingTag}>{savingTag ? "保存中" : "创建并使用"}</button></div>
+          <div className="category-picker"><span className="category-field-label">分类标签 <small>全体成员共享 · 可多选</small></span><button type="button" className="category-select-trigger" aria-expanded={tagPickerOpen} onClick={() => setTagPickerOpen((open) => !open)}><span>{selectedTagIds.length ? `已选 ${selectedTagIds.length} 个标签` : "搜索并选择已有标签"}</span><ChevronDown size={14} /></button>{tagPickerOpen && <div className="category-dropdown"><label className="category-dropdown-search"><Search size={13} /><input value={tagSearch} onChange={(event) => setTagSearch(event.target.value)} placeholder="搜索标签" autoFocus /></label><div className="category-dropdown-list">{tags.filter((tag) => tag.name.toLocaleLowerCase().includes(tagSearch.trim().toLocaleLowerCase())).map((tag) => { const checked = selectedTagIds.includes(tag.id); return <button key={tag.id} type="button" className={checked ? "category-dropdown-option selected" : "category-dropdown-option"} aria-pressed={checked} onClick={() => toggleTag(tag.id)}><span className={checked ? "category-checkbox checked" : "category-checkbox"}>{checked && <Check size={10} />}</span>{tag.name}</button>; })}{!tags.length && <small className="category-tag-empty">还没有分类标签，可在右侧新建</small>}{tags.length > 0 && !tags.some((tag) => tag.name.toLocaleLowerCase().includes(tagSearch.trim().toLocaleLowerCase())) && <small className="category-tag-empty">没有匹配的标签</small>}</div></div>}<div className="category-selected-tags">{tags.filter((tag) => selectedTagIds.includes(tag.id)).map((tag) => <button type="button" key={tag.id} className="category-selected-tag" onClick={() => toggleTag(tag.id)} title={`移除 ${tag.name}`}>{tag.name}<X size={10} /></button>)}</div></div>
+          <div className="category-field-create"><input value={newTagName} onChange={(event) => setNewTagName(event.target.value)} maxLength={40} placeholder="新建公共标签" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void createTag(); } }} /><button type="button" className="button button-quiet" onClick={() => void createTag()} disabled={savingTag}>{savingTag ? "保存中" : "创建并使用"}</button></div>
         </div>
         <div className="section-divider" />
         <div className="controls-heading"><div><span className="step-number">02</span><span><b>选择模型进行比较</b><small>按参考单价从低到高排列，可同时选择多个可用模型</small></span></div><span className="selected-counter">{selected.length} 个已选择</span></div>

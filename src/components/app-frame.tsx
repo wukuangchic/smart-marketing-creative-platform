@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Aperture, ArrowUpRight, Clock3, Images, LogOut, Settings2, Shield, Sparkles, WalletCards } from "lucide-react";
+import { Aperture, ArrowUpRight, BarChart3, Clock3, Gauge, Images, LogOut, Settings2, Shield, Sparkles, WalletCards } from "lucide-react";
 
 type User = { id: string; openId: string; name: string; role: "member" | "admin"; avatarUrl: string | null };
 const nav = [
@@ -11,6 +11,8 @@ const nav = [
   { href: "/history", label: "历史记录", icon: Clock3 },
   { href: "/materials", label: "素材库", icon: Images },
   { href: "/costs", label: "成本统计", icon: WalletCards },
+  { href: "/consumption", label: "消耗统计", icon: BarChart3, planned: true },
+  { href: "/roi", label: "ROI 面板", icon: Gauge, planned: true },
 ];
 
 export function AppFrame({ children }: { children: React.ReactNode }) {
@@ -42,7 +44,7 @@ export function AppFrame({ children }: { children: React.ReactNode }) {
       <Link className="brand" href="/"><span className="brand-icon"><Aperture size={21} strokeWidth={1.8} /></span><span><strong>灵感工场</strong><small>CREATIVE STUDIO</small></span></Link>
       <div className="workspace-picker"><span className="workspace-dot">智</span><span><b>智能营销部</b><small>公司工作空间</small></span><span className="chevrons">⌄</span></div>
       <div className="nav-caption">工作空间</div>
-      <nav className="main-nav">{nav.map((item) => { const Icon = item.icon; return <Link key={item.href} href={item.href} className={active(item.href) ? "nav-item active" : "nav-item"}><Icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.href === "/" && <span className="nav-key">⌘ 1</span>}</Link>; })}</nav>
+      <nav className="main-nav">{nav.map((item) => { const Icon = item.icon; return <Link key={item.href} href={item.href} className={active(item.href) ? "nav-item active" : "nav-item"}><Icon size={17} strokeWidth={1.8} /><span>{item.label}</span>{item.planned && <small className="nav-coming">待开发</small>}{item.href === "/" && <span className="nav-key">⌘ 1</span>}</Link>; })}</nav>
       {user.role === "admin" && <><div className="nav-caption nav-caption-admin">管理</div><nav className="main-nav"><Link href="/admin" className={active("/admin") ? "nav-item active" : "nav-item"}><Settings2 size={17} strokeWidth={1.8} /><span>API 配置</span><Shield size={13} className="admin-shield" /></Link></nav></>}
       <div className="sidebar-bottom">
         {storage?.warning && <div className={storage.blocked ? "storage-note blocked" : "storage-note"}><span className="storage-note-dot" /><div><b>{storage.blocked ? "生成已暂停" : "图片空间接近上限"}</b><small>已使用 {storage.usedPercent}% · 联系管理员扩容</small></div></div>}
