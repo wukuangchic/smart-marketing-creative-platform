@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Check, Download, Filter, Image as ImageIcon, LoaderCircle, Search, X } from "lucide-react";
 
 type Tag = { id: string; name: string };
-type Material = { id: string; original_name: string; media_type: string; width: number | null; height: number | null; size_bytes: string; created_at: string; identifier: string | null; name_template: string | null; tag_id: string | null; tag_name: string | null; model_id: string | null };
+type Material = { id: string; original_name: string; media_type: string; width: number | null; height: number | null; size_bytes: string; created_at: string; identifier: string | null; prompt_prefix: string | null; name_template: string | null; tag_id: string | null; tag_name: string | null; model_id: string | null };
 type Filters = { identifier: string; dateFrom: string; dateTo: string; tagId: string };
 const PAGE_SIZE = 60;
 
@@ -79,7 +79,7 @@ export default function MaterialsPage() {
     <header className="page-topbar"><div className="breadcrumb"><span>工作空间</span><span className="crumb-slash">/</span><b>素材库</b></div><span className="materials-total">{total} 张生成素材</span></header>
     <div className="subpage-heading"><div><p className="eyebrow">CREATIVE ASSETS</p><h1>素材库</h1><p className="muted">集中浏览已生成的图片，按标识、日期和分类标签筛选。</p></div></div>
     <section className="material-filters card-surface">
-      <label><span>创作标识</span><div className="material-search"><Search size={14} /><input value={draft.identifier} onChange={(event) => setDraft((value) => ({ ...value, identifier: event.target.value }))} placeholder="输入 6 位标识" onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }} /></div></label>
+      <label><span>创作标识</span><div className="material-search"><Search size={14} /><input value={draft.identifier} onChange={(event) => setDraft((value) => ({ ...value, identifier: event.target.value }))} placeholder="输入 4 位前缀或 8 位素材标识" onKeyDown={(event) => { if (event.key === "Enter") applyFilters(); }} /></div></label>
       <label><span>开始日期</span><input type="date" value={draft.dateFrom} onChange={(event) => setDraft((value) => ({ ...value, dateFrom: event.target.value }))} /></label>
       <label><span>结束日期</span><input type="date" value={draft.dateTo} onChange={(event) => setDraft((value) => ({ ...value, dateTo: event.target.value }))} /></label>
       <label><span>分类标签</span><select value={draft.tagId} onChange={(event) => setDraft((value) => ({ ...value, tagId: event.target.value }))}><option value="">全部标签</option>{tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}</select></label>

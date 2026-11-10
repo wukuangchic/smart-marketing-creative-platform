@@ -36,7 +36,7 @@ type CatalogEntry = {
   priceCnyPerImage?: Record<string, number | null>;
 };
 
-type PromptEntry = { prompt: string; uses: number; latest_at: string };
+type PromptEntry = { prompt: string; uses: number; latest_at: string; promptPrefix: string | null };
 type CreativeTag = { id: string; name: string; task_count?: number };
 type Estimate = {
   lines: Array<{ modelKey: string; modelName: string; count: number; nativeImageSize: string; estimatedCost: string; currency: string; estimatedCostCny: string | null }>;
@@ -59,7 +59,7 @@ function formatAmount(value: string | number) {
 export function Studio() {
   const [mode, setMode] = useState<"text-to-image" | "image-to-image">("text-to-image");
   const [prompt, setPrompt] = useState("");
-  const [nameTemplate, setNameTemplate] = useState("创意-{标识}-{序号}");
+  const [reusedPromptPrefix, setReusedPromptPrefix] = useState<string | null>(null);
   const [tags, setTags] = useState<CreativeTag[]>([]);
   const [selectedTagId, setSelectedTagId] = useState("");
   const [newTagName, setNewTagName] = useState("");
@@ -154,7 +154,6 @@ export function Studio() {
 
   const outputCount = useMemo(() => selected.reduce((sum, model) => sum + (counts[model] || 1), 0), [selected, counts]);
   const isRunning = loading || Boolean(task && ["queued", "running"].includes(task.status));
-  const nameTemplateValid = (nameTemplate.match(/\{标识\}/g) || []).length === 1 && (nameTemplate.match(/\{序号\}/g) || []).length === 1;
   const missingPriceRates = availableModels.some((model) => {
     const pricing = (catalog[model.key]?.pricing || model.defaultPricing) as { currency: string; perImage: Record<string, string | number> };
     const size = nativeImageSize(model, Number(targetWidth) || 1024, Number(targetHeight) || 1024);
@@ -195,14 +194,13 @@ export function Studio() {
   }
 
   async function requestEstimate() {
-    if (!nameTemplateValid) { setMessage("创作命名必须且只能包含一次 {标识} 和 {序号}"); return; }
     if (!prompt.trim() || !selected.length || (mode === "image-to-image" && !image)) return;
     setEstimating(true); setMessage("");
     try {
       const response = await fetch("/api/generations/estimate", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode, prompt: prompt.trim(), nameTemplate, models: selected.map((key) => ({ modelKey: key, count: counts[key] || 1 })), settings: { aspectRatio, targetWidth: Number(targetWidth), targetHeight: Number(targetHeight) } }),
+        body: JSON.stringify({ mode, prompt: prompt.trim(), models: selected.map((key) => ({ modelKey: key, count: counts[key] || 1 })), settings: { aspectRatio, targetWidth: Number(targetWidth), targetHeight: Number(targetHeight) } }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "成本预估失败");
@@ -218,7 +216,7 @@ export function Studio() {
     const form = new FormData();
     form.set("mode", mode);
     form.set("prompt", prompt.trim());
-    form.set("nameTemplate", nameTemplate.trim());
+    if (reusedPromptPrefix) form.set("promptPrefix", reusedPromptPrefix);
     form.set("tagId", selectedTagId);
     form.set("models", JSON.stringify(selected.map((key) => ({ modelKey: key, count: counts[key] || 1 }))));
     form.set("settings", JSON.stringify({ aspectRatio, targetWidth: Number(targetWidth), targetHeight: Number(targetHeight) }));
@@ -230,7 +228,7 @@ export function Studio() {
       if (!response.ok) throw new Error(data.error || "提交失败");
       const statusResponse = await fetch(`/api/generations/${data.taskId}`, { cache: "no-store" });
       const statusData = statusResponse.ok ? await statusResponse.json() : null;
-      const created = statusData?.task || { id: data.taskId, status: data.status, name_template: nameTemplate.trim(), identifier: data.identifier, tag_id: selectedTagId || null, tag_name: tags.find((tag) => tag.id === selectedTagId)?.name || null, runs: [] } as Task;
+      const created = statusData?.task || { id: data.taskId, status: data.status, name_template: "{标识}", identifier: data.identifier, tag_id: selectedTagId || null, tag_name: tags.find((tag) => tag.id === selectedTagId)?.name || null, runs: [] } as Task;
       setTask(created);
       setRecent((items) => [created, ...items].slice(0, 4));
       if (data.warning) setMessage(data.warning);
@@ -250,6 +248,14 @@ export function Studio() {
     setSelectedPrompts((items) => items.includes(value) ? items.filter((item) => item !== value) : [...items, value]);
   }
 
+  function useHistoryPrompt(entry: PromptEntry) {
+    setPrompt(entry.prompt);
+    setReusedPromptPrefix(entry.promptPrefix);
+    setSelectedPrompts([entry.prompt]);
+    setPromptOpen(false);
+    setMessage(entry.promptPrefix ? `已直接使用历史提示词，后续编号沿用前缀 ${entry.promptPrefix}` : "已直接使用历史提示词，将为这组提示词生成新前缀");
+  }
+
   async function rewriteSelectedPrompts() {
     if (!selectedPrompts.length || !deepseekAvailable) return;
     setRewriting(true); setPromptError(""); setRewrittenPrompt("");
@@ -265,7 +271,7 @@ export function Studio() {
   const statusCount = Object.values(catalog).filter((entry) => entry.enabled).length;
   return <div className="studio-page">
     <header className="page-topbar"><div className="breadcrumb"><span>工作空间</span><span className="crumb-slash">/</span><b>创意生产</b></div><div className="topbar-right"><span className={statusCount ? "status-live" : "status-pending"}><i /> {statusCount} / {MODELS.length} 个模型已配置</span><button className="icon-button help-icon" title="帮助"><CircleHelp size={17} /></button></div></header>
-    <div className="studio-heading"><div><p className="eyebrow">IMAGE CREATION WORKSPACE</p><h1>把灵感，变成看得见的创意。</h1><p className="muted">描述你的想法，或上传一张图片开始创作。</p></div><button className="button button-quiet" onClick={() => { setTask(null); setPrompt(""); setNameTemplate("创意-{标识}-{序号}"); setSelectedTagId(""); setNewTagName(""); setImage(null); }}><Plus size={16} /> 新建创作</button></div>
+    <div className="studio-heading"><div><p className="eyebrow">IMAGE CREATION WORKSPACE</p><h1>把灵感，变成看得见的创意。</h1><p className="muted">描述你的想法，或上传一张图片开始创作。</p></div><button className="button button-quiet" onClick={() => { setTask(null); setPrompt(""); setReusedPromptPrefix(null); setSelectedTagId(""); setNewTagName(""); setImage(null); }}><Plus size={16} /> 新建创作</button></div>
     <div className="mode-switch"><button onClick={() => switchMode("text-to-image")} className={mode === "text-to-image" ? "mode-option active" : "mode-option"}><span className="mode-icon"><WandSparkles size={16} /></span><span><b>文生图</b><small>从文字创造画面</small></span></button><button onClick={() => switchMode("image-to-image")} className={mode === "image-to-image" ? "mode-option active" : "mode-option"}><span className="mode-icon"><ImagePlus size={16} /></span><span><b>图生图</b><small>基于原图继续创作</small></span></button></div>
     <div className="studio-grid">
       <section className="prompt-panel card-surface">
@@ -274,8 +280,8 @@ export function Studio() {
           {preview ? <><img src={preview} alt="上传的参考图" /><div className="upload-overlay"><button className="button button-light" onClick={(event) => { event.stopPropagation(); setImage(null); }}><X size={14} /> 移除图片</button></div></> : <><span className="upload-icon"><ImagePlus size={20} /></span><b>点击或拖拽上传一张图片</b><small>支持 PNG、JPG、WebP，最大 10 MB</small></>}
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => setFile(event.target.files?.[0])} />
         </div>}
-        <div className="prompt-box"><div className="prompt-box-top"><span><MessageSquareText size={14} /> 提示词</span><div className="prompt-top-actions"><span className="prompt-count">{prompt.length} / 18,000</span><button type="button" className="button button-quiet prompt-picker-button" onClick={openPromptPicker}><WandSparkles size={13} /> 历史提示词 · DeepSeek 重构</button></div></div><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "text-to-image" ? "例如：一只橘猫坐在复古咖啡馆的窗边，午后阳光洒进来，胶片摄影质感……" : "例如：保持人物和构图不变，把背景改成海边日落，增加柔和的金色逆光……"} maxLength={18000} /><div className="prompt-hints"><span><Sparkles size={13} /> 描述主体、环境、光线和风格</span><span>Enter 换行</span></div></div>
-        <label className="task-name-field"><span>创作命名模板 <b>必填</b></span><input value={nameTemplate} onChange={(event) => setNameTemplate(event.target.value)} maxLength={120} placeholder="创意-{标识}-{序号}" aria-invalid={!nameTemplateValid} /><small>{nameTemplateValid ? "标识在本次提示词任务和所有对比模型间共用；序号按任务内所有结果连续递增。" : "命名必须且只能包含一次 {标识} 和 {序号}。"}</small></label>
+        <div className="prompt-box"><div className="prompt-box-top"><span><MessageSquareText size={14} /> 提示词</span><div className="prompt-top-actions"><span className="prompt-count">{prompt.length} / 18,000</span><button type="button" className="button button-quiet prompt-picker-button" onClick={openPromptPicker}><WandSparkles size={13} /> 历史提示词 · DeepSeek 重构</button></div></div><textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); setReusedPromptPrefix(null); }} placeholder={mode === "text-to-image" ? "例如：一只橘猫坐在复古咖啡馆的窗边，午后阳光洒进来，胶片摄影质感……" : "例如：保持人物和构图不变，把背景改成海边日落，增加柔和的金色逆光……"} maxLength={18000} /><div className="prompt-hints"><span><Sparkles size={13} /> 描述主体、环境、光线和风格</span><span>Enter 换行</span></div></div>
+        <label className="task-name-field"><span>图片命名</span><input value="{标识}" readOnly /><small>每张图片使用 8 位 32 进制编号：前 4 位标记提示词，后 4 位按图片顺序递增。复用历史提示词时延续前 4 位。</small></label>
         <div className="category-field"><label><span>分类标签</span><select value={selectedTagId} onChange={(event) => setSelectedTagId(event.target.value)}><option value="">未分类</option>{tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}</select></label><div><input value={newTagName} onChange={(event) => setNewTagName(event.target.value)} maxLength={40} placeholder="新建分类标签" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void createTag(); } }} /><button type="button" className="button button-quiet" onClick={() => void createTag()} disabled={savingTag}>{savingTag ? "保存中" : "创建并使用"}</button></div></div>
         <div className="section-divider" />
         <div className="controls-heading"><div><span className="step-number">02</span><span><b>选择模型进行比较</b><small>按参考单价从低到高排列，可同时选择多个可用模型</small></span></div><span className="selected-counter">{selected.length} 个已选择</span></div>
@@ -295,22 +301,22 @@ export function Studio() {
         {missingPriceRates && <p className="price-rate-note">美元模型需要在 API 配置中维护生效汇率；缺少汇率的型号会排在已换算价格之后。</p>}
         <div className="param-row"><label><span>画面比例</span><div className="select-wrap"><select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)}>{SHARED_ASPECT_RATIOS.map((ratio) => <option key={ratio}>{ratio}</option>)}</select><ChevronDown size={14} /></div></label><div className="dimension-fields"><span>目标尺寸</span><div><label><input aria-label="目标宽度" type="number" min={256} max={4096} step={1} value={targetWidth} onChange={(event) => setTargetWidth(event.target.value)} /><small>宽</small></label><b>×</b><label><input aria-label="目标高度" type="number" min={256} max={4096} step={1} value={targetHeight} onChange={(event) => setTargetHeight(event.target.value)} /><small>高</small></label><span>px</span></div></div></div>
         <p className="dimension-note"><Maximize2 size={12} /> 返回图片会按目标尺寸等比填充并裁切边缘，不拉伸变形。</p>
-        <div className="run-footer"><div className="run-note"><Zap size={14} /><span>本次将调用 {selected.length} 个模型，共生成 {outputCount} 张图</span></div><button className="button button-primary generate-button" disabled={!nameTemplateValid || !prompt.trim() || !selected.length || selected.some((key) => !catalog[key]?.enabled) || !Number(targetWidth) || !Number(targetHeight) || Number(targetWidth) < 256 || Number(targetWidth) > 4096 || Number(targetHeight) < 256 || Number(targetHeight) > 4096 || (mode === "image-to-image" && !image) || isRunning || estimating} onClick={requestEstimate}>{estimating ? <><LoaderCircle className="spin" size={16} /> 正在估算</> : isRunning ? <><LoaderCircle className="spin" size={16} /> 正在生成</> : <><Sparkles size={15} /> 查看预估并生成 <ArrowRight size={15} /></>}</button></div>
+        <div className="run-footer"><div className="run-note"><Zap size={14} /><span>本次将调用 {selected.length} 个模型，共生成 {outputCount} 张图{reusedPromptPrefix ? ` · 延续前缀 ${reusedPromptPrefix}` : ""}</span></div><button className="button button-primary generate-button" disabled={!prompt.trim() || !selected.length || selected.some((key) => !catalog[key]?.enabled) || !Number(targetWidth) || !Number(targetHeight) || Number(targetWidth) < 256 || Number(targetWidth) > 4096 || Number(targetHeight) < 256 || Number(targetHeight) > 4096 || (mode === "image-to-image" && !image) || isRunning || estimating} onClick={requestEstimate}>{estimating ? <><LoaderCircle className="spin" size={16} /> 正在估算</> : isRunning ? <><LoaderCircle className="spin" size={16} /> 正在生成</> : <><Sparkles size={15} /> 查看预估并生成 <ArrowRight size={15} /></>}</button></div>
         {message && <div className="inline-error">{message}</div>}
       </section>
 
       <section className="result-panel card-surface">
         <div className="result-panel-top"><div><p className="eyebrow">RESULT CANVAS</p><h2>{task ? "模型对比结果" : "创作画布"}</h2></div><div className="canvas-tools"><button className="canvas-tool active" title="选择"><MousePointer2 size={15} /></button><button className="canvas-tool" title="更多"><MoreHorizontal size={16} /></button></div></div>
-        {!task && <div className="empty-canvas"><div className="canvas-grid" /><div className="empty-art"><div className="empty-art-frame"><div className="empty-art-sun" /><div className="empty-art-mountain mountain-one" /><div className="empty-art-mountain mountain-two" /><div className="empty-art-flower flower-one">✿</div><div className="empty-art-flower flower-two">✿</div><div className="empty-art-caption">A LITTLE IDEA<br /><b>GOES A LONG WAY</b></div></div><span className="float-chip chip-left"><Sparkles size={13} /> 灵感，正在酝酿</span><span className="float-chip chip-right"><span>✦</span> {availableModels.length} 个模型可选</span></div><h3>你的画布，等待第一张作品</h3><p>提交创作后，结果会在这里并排呈现。<br />每个模型独立显示进度与成本。</p><div className="canvas-shortcut"><span>试试从一个简单想法开始</span><button onClick={() => setPrompt("一间被午后阳光照亮的复古咖啡馆，窗边一束鲜花，温柔的胶片色调，安静松弛的氛围")}>使用示例提示词 <ArrowRight size={13} /></button></div></div>}
+        {!task && <div className="empty-canvas"><div className="canvas-grid" /><div className="empty-art"><div className="empty-art-frame"><div className="empty-art-sun" /><div className="empty-art-mountain mountain-one" /><div className="empty-art-mountain mountain-two" /><div className="empty-art-flower flower-one">✿</div><div className="empty-art-flower flower-two">✿</div><div className="empty-art-caption">A LITTLE IDEA<br /><b>GOES A LONG WAY</b></div></div><span className="float-chip chip-left"><Sparkles size={13} /> 灵感，正在酝酿</span><span className="float-chip chip-right"><span>✦</span> {availableModels.length} 个模型可选</span></div><h3>你的画布，等待第一张作品</h3><p>提交创作后，结果会在这里并排呈现。<br />每个模型独立显示进度与成本。</p><div className="canvas-shortcut"><span>试试从一个简单想法开始</span><button onClick={() => { setPrompt("一间被午后阳光照亮的复古咖啡馆，窗边一束鲜花，温柔的胶片色调，安静松弛的氛围"); setReusedPromptPrefix(null); }}>使用示例提示词 <ArrowRight size={13} /></button></div></div>}
         {task && <>{task.input_url && <div className="reference-preview"><span>共同原图</span><img src={task.input_url} alt="本次图生图的原始图片" /></div>}<div className="comparison-results">{task.runs.length === 0 && <div className="waiting-runs"><LoaderCircle className="spin" size={20} /><b>已提交到生成队列</b><span>模型正在准备画面，请稍候…</span></div>}{task.runs.map((run) => { const model = MODELS.find((item) => item.key === run.modelKey); const logo = providerLogo(run.provider); return <article key={run.id} className="result-card"><div className="result-card-head"><div className={`provider-logo ${logo.className}`}>{logo.text}</div><div><b>{model?.name || run.modelId}</b><small>{run.status === "succeeded" ? "生成完成" : run.status === "failed" ? "生成失败" : run.status === "unknown" ? "状态待核实" : "正在生成…"}</small></div><span className={run.status === "succeeded" ? "run-state ok" : "run-state"}>{run.status === "succeeded" ? <Check size={13} /> : <LoaderCircle className="spin" size={13} />}</span></div>
             {run.outputs?.length ? <div className="result-images">{run.outputs.map((output) => <figure key={output.id}><img src={output.url} alt={`${model?.name}生成的作品`} /><a href={`${output.url}?download=1`} download className="image-download"><ArrowDownToLine size={15} /></a></figure>)}</div> : <div className={run.status === "failed" || run.status === "unknown" ? "result-placeholder failed" : "result-placeholder"}>{run.status === "failed" ? <span>{run.errorMessage || "生成失败"}</span> : run.status === "unknown" ? <span>{run.errorMessage || "请先核对供应商记录"}</span> : <><LoaderCircle className="spin" size={18} /><span>正在为你生成画面</span></>}</div>}
             <div className="result-card-foot"><span><Clock3 size={13} /> {run.status === "succeeded" ? `${run.imageCount} 张图片 · ${run.startedAt && run.finishedAt ? `${Math.max(1, Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000))} 秒` : "已完成"}` : "等待结果"}</span><span className="cost-tag">{run.estimatedCost ? `估算 ${run.estimatedCost} ${run.currency}` : "成本待配置"}</span></div>
           </article>; })}</div></>}
-        {task && <div className="result-bottom-note"><span>命名 · {task.name_template && task.identifier ? task.name_template.replace("{标识}", task.identifier) : "旧记录"}　标识 · {task.identifier || "—"}{task.tag_name ? `　分类 · ${task.tag_name}` : ""}</span><span>费用为估算值，以供应商账单为准</span></div>}
+        {task && <div className="result-bottom-note"><span>提示词前缀 · {task.identifier || "旧记录"}{task.tag_name ? `　分类 · ${task.tag_name}` : ""}</span><span>结果文件名包含每张素材的完整 8 位编号</span></div>}
       </section>
     </div>
     <section className="recent-section"><div className="recent-heading"><div><p className="eyebrow">RECENT CREATIONS</p><h2>最近创作</h2></div><a href="/history">查看全部 <ArrowRight size={14} /></a></div><div className="recent-grid">{recent.length ? recent.slice(0, 4).map((item) => <a key={item.id} href="/history" className="recent-tile">{item.runs?.flatMap((run) => run.outputs || []).slice(0, 1).map((output) => <img key={output.id} src={output.url} alt="最近创作" />)}<div><b>{item.status === "succeeded" ? "已完成创作" : item.status === "failed" ? "生成未完成" : "创作进行中"}</b><small>{new Date(item.created_at || Date.now()).toLocaleDateString("zh-CN")}</small></div></a>) : <div className="recent-empty"><Clock3 size={16} /><span>你的近期作品会显示在这里</span></div>}</div></section>
-    <div className="studio-tip"><span><Sparkles size={14} /> 创作提示</span><p>试着把「主体 + 场景 + 光线 + 风格」写进提示词，让模型更准确地捕捉你的想法。</p><button onClick={() => setPrompt("主体：一只白色小狗；场景：春日花园；光线：清晨柔和的自然光；风格：温暖、细腻的胶片摄影")}>写个好提示词 <ArrowRight size={13} /></button></div>
+    <div className="studio-tip"><span><Sparkles size={14} /> 创作提示</span><p>试着把「主体 + 场景 + 光线 + 风格」写进提示词，让模型更准确地捕捉你的想法。</p><button onClick={() => { setPrompt("主体：一只白色小狗；场景：春日花园；光线：清晨柔和的自然光；风格：温暖、细腻的胶片摄影"); setReusedPromptPrefix(null); }}>写个好提示词 <ArrowRight size={13} /></button></div>
 
     {estimateOpen && estimate && <div className="dialog-overlay" onClick={() => setEstimateOpen(false)}><section className="dialog-card estimate-dialog" role="dialog" aria-modal="true" aria-labelledby="estimate-title" onClick={(event) => event.stopPropagation()}>
       <div className="dialog-head"><div><span className="dialog-icon"><Zap size={16} /></span><div><h2 id="estimate-title">确认本次预估成本</h2><p>确认后才会调用所选模型；价格以供应商实际计费为准。</p></div></div><button className="icon-button" aria-label="关闭" onClick={() => setEstimateOpen(false)}><X size={17} /></button></div>
@@ -323,9 +329,9 @@ export function Studio() {
     {promptOpen && <div className="dialog-overlay" onClick={() => setPromptOpen(false)}><section className="dialog-card prompt-dialog" role="dialog" aria-modal="true" aria-labelledby="prompt-dialog-title" onClick={(event) => event.stopPropagation()}>
       <div className="dialog-head"><div><span className="dialog-icon"><WandSparkles size={16} /></span><div><h2 id="prompt-dialog-title">从历史提示词重构</h2><p>搜索并多选已用过的提示词，再交给 DeepSeek 合并重写。</p></div></div><button className="icon-button" aria-label="关闭" onClick={() => setPromptOpen(false)}><X size={17} /></button></div>
       <label className="prompt-search"><Search size={15} /><input autoFocus value={promptSearch} onChange={(event) => setPromptSearch(event.target.value)} placeholder="搜索提示词内容" /><span>{selectedPrompts.length} 项已选</span></label>
-      <div className="history-prompt-list">{loadingPrompts ? <div className="dialog-empty"><LoaderCircle className="spin" size={18} /> 正在读取历史提示词…</div> : promptEntries.length ? promptEntries.map((entry) => <label key={entry.prompt} className={selectedPrompts.includes(entry.prompt) ? "history-prompt-option chosen" : "history-prompt-option"}><input type="checkbox" checked={selectedPrompts.includes(entry.prompt)} onChange={() => toggleHistoryPrompt(entry.prompt)} /><span><b>{entry.prompt}</b><small>使用 {entry.uses} 次 · 最近使用 {new Date(entry.latest_at).toLocaleDateString("zh-CN")}</small></span></label>) : <div className="dialog-empty">没有匹配的历史提示词</div>}</div>
+      <div className="history-prompt-list">{loadingPrompts ? <div className="dialog-empty"><LoaderCircle className="spin" size={18} /> 正在读取历史提示词…</div> : promptEntries.length ? promptEntries.map((entry) => <div key={entry.prompt} className={selectedPrompts.includes(entry.prompt) ? "history-prompt-option chosen" : "history-prompt-option"}><label className="history-prompt-choice"><input type="checkbox" checked={selectedPrompts.includes(entry.prompt)} onChange={() => toggleHistoryPrompt(entry.prompt)} /><span><b>{entry.prompt}</b><small>使用 {entry.uses} 次 · 最近使用 {new Date(entry.latest_at).toLocaleDateString("zh-CN")} · {entry.promptPrefix ? `沿用前缀 ${entry.promptPrefix}` : "旧记录无前缀"}</small></span></label><button type="button" className="button button-quiet prompt-direct-use" onClick={() => useHistoryPrompt(entry)}>直接使用</button></div>) : <div className="dialog-empty">没有匹配的历史提示词</div>}</div>
       {promptError && <div className="inline-error">{promptError}</div>}
-      {rewrittenPrompt && <div className="rewritten-prompt"><b><Sparkles size={13} /> DeepSeek 重构结果</b><p>{rewrittenPrompt}</p><button className="button button-quiet" onClick={() => { setPrompt(rewrittenPrompt); setPromptOpen(false); }}>替换当前提示词 <ArrowRight size={13} /></button></div>}
+      {rewrittenPrompt && <div className="rewritten-prompt"><b><Sparkles size={13} /> DeepSeek 重构结果</b><p>{rewrittenPrompt}</p><button className="button button-quiet" onClick={() => { setPrompt(rewrittenPrompt); setReusedPromptPrefix(null); setPromptOpen(false); }}>替换当前提示词 <ArrowRight size={13} /></button></div>}
       <div className="dialog-actions prompt-dialog-actions"><button className="button button-quiet" onClick={() => setPromptOpen(false)}>关闭</button><button className="button button-primary" onClick={rewriteSelectedPrompts} disabled={!selectedPrompts.length || !deepseekAvailable || rewriting}>{rewriting ? <><LoaderCircle className="spin" size={15} /> 正在重构</> : <><WandSparkles size={15} /> DeepSeek 一键重构</>}</button></div>
       {!deepseekAvailable && <p className="dialog-footnote">DeepSeek API 尚未启用，请管理员先在 API 配置中完成设置。</p>}
     </section></div>}

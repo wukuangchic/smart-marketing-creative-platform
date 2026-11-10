@@ -2,6 +2,7 @@ import { decryptSecret } from "./crypto";
 import { query } from "./db";
 import { MODELS, nativeImageSize } from "./models";
 import { readMedia, removeMedia, resizeGenerated, storeGenerated } from "./media";
+import { createMaterialIdentifier, isPromptPrefix } from "./identifiers";
 import type { ProviderSlug } from "./types";
 
 export interface ImageOutput {
@@ -87,10 +88,17 @@ export async function runProviderRun(runId: string) {
       providerResult.usage.outputHeight = targetHeight;
     }
     for (const [index, output] of providerResult.outputs.entries()) {
-      const sequence = String(run.sequence_start + index).padStart(3, "0");
-      const template = run.name_template || "创意-{标识}-{序号}";
-      let outputName = template.replace("{标识}", run.identifier || "legacy").replace("{序号}", sequence);
-      if (!template.includes("{序号}")) outputName = `${outputName}-${sequence}`;
+      const newIdentifierFormat = run.name_template === "{标识}" && isPromptPrefix(run.identifier || "");
+      const outputIdentifier = newIdentifierFormat ? createMaterialIdentifier(run.identifier!, run.sequence_start + index) : null;
+      let outputName: string;
+      if (outputIdentifier) {
+        outputName = outputIdentifier;
+      } else {
+        const sequence = String(run.sequence_start + index).padStart(3, "0");
+        const template = run.name_template || "创意-{标识}-{序号}";
+        outputName = template.replace("{标识}", run.identifier || "legacy").replace("{序号}", sequence);
+        if (!template.includes("{序号}")) outputName = `${outputName}-${sequence}`;
+      }
       const asset = await storeGenerated(output.bytes, output.mediaType, run.creator_id, outputName);
       const client = await (await import("./db")).pool.connect();
       try {
@@ -98,9 +106,9 @@ export async function runProviderRun(runId: string) {
         const task = await client.query("SELECT id FROM generation_tasks WHERE id=$1 FOR UPDATE", [run.task_id]);
         if (!task.rowCount) throw new Error("此任务已由管理员删除");
         await client.query(
-          `INSERT INTO media_assets(id,task_id,run_id,owner_id,kind,relative_path,media_type,size_bytes,sha256,original_name,width,height)
-           VALUES ($1,$2,$3,$4,'output',$5,$6,$7,$8,$9,$10,$11)`,
-          [asset.id, run.task_id, runId, asset.ownerId, asset.relativePath, asset.mediaType, asset.size, asset.sha256, asset.originalName, output.width ?? null, output.height ?? null],
+          `INSERT INTO media_assets(id,task_id,run_id,owner_id,kind,relative_path,media_type,size_bytes,sha256,original_name,identifier,width,height)
+           VALUES ($1,$2,$3,$4,'output',$5,$6,$7,$8,$9,$10,$11,$12)`,
+          [asset.id, run.task_id, runId, asset.ownerId, asset.relativePath, asset.mediaType, asset.size, asset.sha256, asset.originalName, outputIdentifier, output.width ?? null, output.height ?? null],
         );
         await client.query("COMMIT");
       } catch (error) {

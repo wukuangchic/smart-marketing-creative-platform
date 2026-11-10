@@ -137,3 +137,9 @@
 .materials-more .button{font-size:9px}
 @media(max-width:1120px){.material-filters{grid-template-columns:repeat(3,minmax(130px,1fr))}.materials-grid{grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}}
 @media(max-width:640px){.category-field{grid-template-columns:1fr}.category-field>div{align-items:center}.material-filters{grid-template-columns:1fr 1fr;padding:10px}.material-filters label:first-child,.material-filters label:last-of-type{grid-column:1/-1}.materials-toolbar{align-items:flex-start;gap:8px;flex-direction:column}.materials-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.material-meta{padding:7px}.history-images .history-image-preview{width:52px;height:52px}}
+.history-prompt-option{align-items:center}
+.history-prompt-choice{display:flex;align-items:flex-start;gap:8px;min-width:0;flex:1;cursor:pointer}
+.history-prompt-choice>span{min-width:0}
+.prompt-direct-use{height:26px;flex:none;padding:5px 8px;font-size:8px;white-space:nowrap}
+.task-name-field input[readonly]{color:#7258c7;background:#fff;font-family:'DM Mono',monospace;letter-spacing:.06em}
+@media(max-width:640px){.history-prompt-option{gap:5px;padding:7px}.prompt-direct-use{padding:4px 6px;font-size:7px}}

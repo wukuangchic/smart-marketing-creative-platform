@@ -22,7 +22,7 @@ export async function GET(request: Request) {
     const dateTo = params.get("dateTo") || "";
     const tagId = params.get("tagId") || "";
     const offset = Math.min(Math.max(Number.parseInt(params.get("offset") || "0", 10) || 0, 0), 1_000_000);
-    if (identifier.length > 40) return NextResponse.json({ error: "标识最多 40 个字符" }, { status: 400 });
+    if (identifier.length > 8 || (identifier && !/^[0-9a-z]+$/i.test(identifier))) return NextResponse.json({ error: "请输入有效的提示词前缀或素材标识" }, { status: 400 });
     if ((dateFrom && !validDate(dateFrom)) || (dateTo && !validDate(dateTo))) return NextResponse.json({ error: "日期格式无效" }, { status: 400 });
     if (dateFrom && dateTo && dateFrom > dateTo) return NextResponse.json({ error: "开始日期不能晚于结束日期" }, { status: 400 });
     if (tagId && !UUID_PATTERN.test(tagId)) return NextResponse.json({ error: "分类标签无效" }, { status: 400 });
@@ -30,7 +30,10 @@ export async function GET(request: Request) {
     const values: unknown[] = [];
     const conditions = ["asset.kind='output'"];
     const add = (value: unknown) => { values.push(value); return `$${values.length}`; };
-    if (identifier) conditions.push(`task.identifier=${add(identifier)}`);
+    if (identifier) {
+      const pattern = add(`${identifier.toUpperCase()}%`);
+      conditions.push(`(UPPER(COALESCE(asset.identifier,task.identifier)) LIKE ${pattern} OR UPPER(task.identifier) LIKE ${pattern})`);
+    }
     if (dateFrom) conditions.push(`asset.created_at >= (${add(dateFrom)}::date::timestamp AT TIME ZONE 'Asia/Shanghai')`);
     if (dateTo) conditions.push(`asset.created_at < ((${add(dateTo)}::date + interval '1 day') AT TIME ZONE 'Asia/Shanghai')`);
     if (tagId) conditions.push(`task.tag_id=${add(tagId)}::uuid`);
@@ -44,7 +47,7 @@ export async function GET(request: Request) {
     const pageValues = [...values, PAGE_SIZE, offset];
     const rows = await query(
       `SELECT asset.id,asset.original_name,asset.media_type,asset.width,asset.height,asset.size_bytes,asset.created_at,
-              task.identifier,task.name_template,task.tag_id,tag.name AS tag_name,run.model_id
+              COALESCE(asset.identifier,task.identifier) AS identifier,task.identifier AS prompt_prefix,task.name_template,task.tag_id,tag.name AS tag_name,run.model_id
        FROM media_assets asset
        JOIN generation_tasks task ON task.id=asset.task_id
        LEFT JOIN creative_tags tag ON tag.id=task.tag_id

@@ -77,6 +77,11 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
   finished_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS generation_tasks_created_idx ON generation_tasks(created_at DESC);
+CREATE TABLE IF NOT EXISTS prompt_sequences (
+  prompt_prefix text PRIMARY KEY,
+  next_sequence integer NOT NULL DEFAULT 1 CHECK (next_sequence BETWEEN 1 AND 1048576),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS provider_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   task_id uuid NOT NULL REFERENCES generation_tasks(id) ON DELETE CASCADE,
@@ -110,6 +115,7 @@ CREATE TABLE IF NOT EXISTS media_assets (
   size_bytes bigint NOT NULL,
   sha256 text NOT NULL,
   original_name text NOT NULL,
+  identifier text,
   width integer,
   height integer,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -150,10 +156,13 @@ try {
   await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS name_template text`);
   await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS identifier text`);
   await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS tag_id uuid REFERENCES creative_tags(id) ON DELETE SET NULL`);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS generation_tasks_identifier_uidx ON generation_tasks(identifier)`);
+  await pool.query(`DROP INDEX IF EXISTS generation_tasks_identifier_uidx`);
   await pool.query(`ALTER TABLE provider_runs ADD COLUMN IF NOT EXISTS sequence_start integer NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS identifier text`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS media_assets_identifier_idx ON media_assets(identifier)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS media_assets_library_idx ON media_assets(kind,created_at DESC)`);
   await pool.query("INSERT INTO schema_migrations(name) VALUES ('003_creative_tags_and_sequences') ON CONFLICT DO NOTHING");
+  await pool.query("INSERT INTO schema_migrations(name) VALUES ('004_prompt_prefix_identifiers') ON CONFLICT DO NOTHING");
   // Expand provider configuration support before seeding any newly supported providers.
   await pool.query(`ALTER TABLE provider_configs DROP CONSTRAINT IF EXISTS provider_configs_provider_check`);
   await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','deepseek'))`);
