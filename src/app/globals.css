@@ -141,5 +141,5 @@
 .history-prompt-choice{display:flex;align-items:flex-start;gap:8px;min-width:0;flex:1;cursor:pointer}
 .history-prompt-choice>span{min-width:0}
 .prompt-direct-use{height:26px;flex:none;padding:5px 8px;font-size:8px;white-space:nowrap}
-.task-name-field input[readonly]{color:#7258c7;background:#fff;font-family:'DM Mono',monospace;letter-spacing:.06em}
+.task-name-field .task-name-error{color:#c96960}
 @media(max-width:640px){.history-prompt-option{gap:5px;padding:7px}.prompt-direct-use{padding:4px 6px;font-size:7px}}

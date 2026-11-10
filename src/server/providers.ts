@@ -88,11 +88,12 @@ export async function runProviderRun(runId: string) {
       providerResult.usage.outputHeight = targetHeight;
     }
     for (const [index, output] of providerResult.outputs.entries()) {
-      const newIdentifierFormat = run.name_template === "{标识}" && isPromptPrefix(run.identifier || "");
+      const newIdentifierFormat = isPromptPrefix(run.identifier || "");
       const outputIdentifier = newIdentifierFormat ? createMaterialIdentifier(run.identifier!, run.sequence_start + index) : null;
       let outputName: string;
       if (outputIdentifier) {
-        outputName = outputIdentifier;
+        const template = run.name_template || "{标识}";
+        outputName = template.replace("{标识}", outputIdentifier);
       } else {
         const sequence = String(run.sequence_start + index).padStart(3, "0");
         const template = run.name_template || "创意-{标识}-{序号}";

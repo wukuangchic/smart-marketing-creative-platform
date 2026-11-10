@@ -13,6 +13,10 @@ import { createPromptPrefix, isPromptPrefix, MAX_BASE32_SEQUENCE, normalizePromp
 const schema = z.object({
   mode: z.enum(["text-to-image", "image-to-image"]),
   prompt: z.string().trim().min(1).max(18000),
+  nameTemplate: z.string().trim().min(1).max(120).refine((value) => {
+    const firstToken = value.indexOf("{标识}");
+    return firstToken >= 0 && firstToken === value.lastIndexOf("{标识}") && !value.includes("{序号}");
+  }, "图片命名必须且只能包含一次 {标识}；序号已包含在 8 位编号中"),
   promptPrefix: z.string().optional().nullable(),
   tagId: z.string().uuid().nullable().optional(),
   models: z.array(z.object({ modelKey: z.string(), count: z.coerce.number().int().min(1).max(20) })).min(1).max(MODELS.length),
@@ -35,7 +39,7 @@ export async function POST(request: Request) {
     const usage = await storageStatus();
     if (usage.blocked) return NextResponse.json({ error: "图片存储空间已达到暂停阈值，请联系管理员扩容后再生成" }, { status: 507 });
     const form = await request.formData();
-    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), promptPrefix: String(form.get("promptPrefix") || "") || null, tagId: String(form.get("tagId") || "") || null, models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
+    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), nameTemplate: form.get("nameTemplate"), promptPrefix: String(form.get("promptPrefix") || "") || null, tagId: String(form.get("tagId") || "") || null, models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "生成参数无效" }, { status: 400 });
     if (parsed.data.promptPrefix && !isPromptPrefix(parsed.data.promptPrefix)) return NextResponse.json({ error: "提示词标识前缀无效，请重新选择历史提示词" }, { status: 400 });
     if (parsed.data.promptPrefix) {
@@ -92,8 +96,8 @@ export async function POST(request: Request) {
       );
       await dbClient.query(
         `INSERT INTO generation_tasks(id,creator_id,mode,prompt,name_template,identifier,tag_id,input_asset_id,settings,status)
-         VALUES ($1,$2,$3,$4,'{标识}',$5,$6,$7,$8,'queued')`,
-        [taskId, user.id, parsed.data.mode, parsed.data.prompt, identifier, parsed.data.tagId || null, assetId, JSON.stringify(taskSettings)],
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued')`,
+        [taskId, user.id, parsed.data.mode, parsed.data.prompt, parsed.data.nameTemplate, identifier, parsed.data.tagId || null, assetId, JSON.stringify(taskSettings)],
       );
       for (const requested of parsed.data.models) {
         const model = MODELS.find((item) => item.key === requested.modelKey)!;

@@ -59,6 +59,7 @@ function formatAmount(value: string | number) {
 export function Studio() {
   const [mode, setMode] = useState<"text-to-image" | "image-to-image">("text-to-image");
   const [prompt, setPrompt] = useState("");
+  const [nameTemplate, setNameTemplate] = useState("{标识}");
   const [reusedPromptPrefix, setReusedPromptPrefix] = useState<string | null>(null);
   const [tags, setTags] = useState<CreativeTag[]>([]);
   const [selectedTagId, setSelectedTagId] = useState("");
@@ -154,6 +155,14 @@ export function Studio() {
 
   const outputCount = useMemo(() => selected.reduce((sum, model) => sum + (counts[model] || 1), 0), [selected, counts]);
   const isRunning = loading || Boolean(task && ["queued", "running"].includes(task.status));
+  const hasOneIdentifierToken = nameTemplate.includes("{标识}") && nameTemplate.indexOf("{标识}") === nameTemplate.lastIndexOf("{标识}");
+  const containsLegacySequenceToken = nameTemplate.includes("{序号}");
+  const nameTemplateValid = hasOneIdentifierToken && !containsLegacySequenceToken;
+  const nameTemplateError = !hasOneIdentifierToken
+    ? "命名模板必须且只能包含一次 {标识}"
+    : containsLegacySequenceToken
+      ? "序号已包含在 8 位编号中，请删除 {序号}"
+      : "";
   const missingPriceRates = availableModels.some((model) => {
     const pricing = (catalog[model.key]?.pricing || model.defaultPricing) as { currency: string; perImage: Record<string, string | number> };
     const size = nativeImageSize(model, Number(targetWidth) || 1024, Number(targetHeight) || 1024);
@@ -194,6 +203,7 @@ export function Studio() {
   }
 
   async function requestEstimate() {
+    if (!nameTemplateValid) return;
     if (!prompt.trim() || !selected.length || (mode === "image-to-image" && !image)) return;
     setEstimating(true); setMessage("");
     try {
@@ -212,10 +222,12 @@ export function Studio() {
 
   async function submitGeneration() {
     if (!estimate) return;
+    if (!nameTemplateValid) { setMessage(nameTemplateError); setEstimateOpen(false); return; }
     setEstimateOpen(false); setLoading(true); setMessage(""); setTask(null);
     const form = new FormData();
     form.set("mode", mode);
     form.set("prompt", prompt.trim());
+    form.set("nameTemplate", nameTemplate.trim());
     if (reusedPromptPrefix) form.set("promptPrefix", reusedPromptPrefix);
     form.set("tagId", selectedTagId);
     form.set("models", JSON.stringify(selected.map((key) => ({ modelKey: key, count: counts[key] || 1 }))));
@@ -228,7 +240,7 @@ export function Studio() {
       if (!response.ok) throw new Error(data.error || "提交失败");
       const statusResponse = await fetch(`/api/generations/${data.taskId}`, { cache: "no-store" });
       const statusData = statusResponse.ok ? await statusResponse.json() : null;
-      const created = statusData?.task || { id: data.taskId, status: data.status, name_template: "{标识}", identifier: data.identifier, tag_id: selectedTagId || null, tag_name: tags.find((tag) => tag.id === selectedTagId)?.name || null, runs: [] } as Task;
+      const created = statusData?.task || { id: data.taskId, status: data.status, name_template: nameTemplate.trim(), identifier: data.identifier, tag_id: selectedTagId || null, tag_name: tags.find((tag) => tag.id === selectedTagId)?.name || null, runs: [] } as Task;
       setTask(created);
       setRecent((items) => [created, ...items].slice(0, 4));
       if (data.warning) setMessage(data.warning);
@@ -281,7 +293,7 @@ export function Studio() {
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => setFile(event.target.files?.[0])} />
         </div>}
         <div className="prompt-box"><div className="prompt-box-top"><span><MessageSquareText size={14} /> 提示词</span><div className="prompt-top-actions"><span className="prompt-count">{prompt.length} / 18,000</span><button type="button" className="button button-quiet prompt-picker-button" onClick={openPromptPicker}><WandSparkles size={13} /> 历史提示词 · DeepSeek 重构</button></div></div><textarea value={prompt} onChange={(event) => { setPrompt(event.target.value); setReusedPromptPrefix(null); }} placeholder={mode === "text-to-image" ? "例如：一只橘猫坐在复古咖啡馆的窗边，午后阳光洒进来，胶片摄影质感……" : "例如：保持人物和构图不变，把背景改成海边日落，增加柔和的金色逆光……"} maxLength={18000} /><div className="prompt-hints"><span><Sparkles size={13} /> 描述主体、环境、光线和风格</span><span>Enter 换行</span></div></div>
-        <label className="task-name-field"><span>图片命名</span><input value="{标识}" readOnly /><small>每张图片使用 8 位 32 进制编号：前 4 位标记提示词，后 4 位按图片顺序递增。复用历史提示词时延续前 4 位。</small></label>
+        <label className="task-name-field"><span>图片命名</span><input value={nameTemplate} onChange={(event) => setNameTemplate(event.target.value)} maxLength={120} aria-invalid={!nameTemplateValid} aria-describedby="name-template-help" /><small id="name-template-help">可在编号前后添加自定义文字，必须且只能包含一次 {"{标识}"}；示例：活动名称-{"{标识}"}。{`{标识}`} 会替换为 8 位编号，复用历史提示词时沿用前 4 位。</small>{!nameTemplateValid && <small className="task-name-error">{nameTemplateError}</small>}</label>
         <div className="category-field"><label><span>分类标签</span><select value={selectedTagId} onChange={(event) => setSelectedTagId(event.target.value)}><option value="">未分类</option>{tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}</select></label><div><input value={newTagName} onChange={(event) => setNewTagName(event.target.value)} maxLength={40} placeholder="新建分类标签" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void createTag(); } }} /><button type="button" className="button button-quiet" onClick={() => void createTag()} disabled={savingTag}>{savingTag ? "保存中" : "创建并使用"}</button></div></div>
         <div className="section-divider" />
         <div className="controls-heading"><div><span className="step-number">02</span><span><b>选择模型进行比较</b><small>按参考单价从低到高排列，可同时选择多个可用模型</small></span></div><span className="selected-counter">{selected.length} 个已选择</span></div>
@@ -301,7 +313,7 @@ export function Studio() {
         {missingPriceRates && <p className="price-rate-note">美元模型需要在 API 配置中维护生效汇率；缺少汇率的型号会排在已换算价格之后。</p>}
         <div className="param-row"><label><span>画面比例</span><div className="select-wrap"><select value={aspectRatio} onChange={(event) => setAspectRatio(event.target.value)}>{SHARED_ASPECT_RATIOS.map((ratio) => <option key={ratio}>{ratio}</option>)}</select><ChevronDown size={14} /></div></label><div className="dimension-fields"><span>目标尺寸</span><div><label><input aria-label="目标宽度" type="number" min={256} max={4096} step={1} value={targetWidth} onChange={(event) => setTargetWidth(event.target.value)} /><small>宽</small></label><b>×</b><label><input aria-label="目标高度" type="number" min={256} max={4096} step={1} value={targetHeight} onChange={(event) => setTargetHeight(event.target.value)} /><small>高</small></label><span>px</span></div></div></div>
         <p className="dimension-note"><Maximize2 size={12} /> 返回图片会按目标尺寸等比填充并裁切边缘，不拉伸变形。</p>
-        <div className="run-footer"><div className="run-note"><Zap size={14} /><span>本次将调用 {selected.length} 个模型，共生成 {outputCount} 张图{reusedPromptPrefix ? ` · 延续前缀 ${reusedPromptPrefix}` : ""}</span></div><button className="button button-primary generate-button" disabled={!prompt.trim() || !selected.length || selected.some((key) => !catalog[key]?.enabled) || !Number(targetWidth) || !Number(targetHeight) || Number(targetWidth) < 256 || Number(targetWidth) > 4096 || Number(targetHeight) < 256 || Number(targetHeight) > 4096 || (mode === "image-to-image" && !image) || isRunning || estimating} onClick={requestEstimate}>{estimating ? <><LoaderCircle className="spin" size={16} /> 正在估算</> : isRunning ? <><LoaderCircle className="spin" size={16} /> 正在生成</> : <><Sparkles size={15} /> 查看预估并生成 <ArrowRight size={15} /></>}</button></div>
+        <div className="run-footer"><div className="run-note"><Zap size={14} /><span>本次将调用 {selected.length} 个模型，共生成 {outputCount} 张图{reusedPromptPrefix ? ` · 延续前缀 ${reusedPromptPrefix}` : ""}</span></div><button className="button button-primary generate-button" disabled={!prompt.trim() || !nameTemplateValid || !selected.length || selected.some((key) => !catalog[key]?.enabled) || !Number(targetWidth) || !Number(targetHeight) || Number(targetWidth) < 256 || Number(targetWidth) > 4096 || Number(targetHeight) < 256 || Number(targetHeight) > 4096 || (mode === "image-to-image" && !image) || isRunning || estimating} onClick={requestEstimate}>{estimating ? <><LoaderCircle className="spin" size={16} /> 正在估算</> : isRunning ? <><LoaderCircle className="spin" size={16} /> 正在生成</> : <><Sparkles size={15} /> 查看预估并生成 <ArrowRight size={15} /></>}</button></div>
         {message && <div className="inline-error">{message}</div>}
       </section>
 
