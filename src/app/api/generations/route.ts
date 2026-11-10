@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { currentUser, requireUser } from "@/server/auth";
@@ -11,6 +11,7 @@ import { jsonError, sameOrigin } from "@/server/http";
 const schema = z.object({
   mode: z.enum(["text-to-image", "image-to-image"]),
   prompt: z.string().trim().min(1).max(18000),
+  nameTemplate: z.string().trim().min(1).max(120).refine((value) => (value.match(/\{标识\}/g) || []).length === 1, "创作命名必须且只能包含一次 {标识}"),
   models: z.array(z.object({ modelKey: z.string(), count: z.coerce.number().int().min(1).max(20) })).min(1).max(MODELS.length),
   settings: z.object({
     aspectRatio: z.enum(SHARED_ASPECT_RATIOS),
@@ -19,6 +20,12 @@ const schema = z.object({
   }),
   confirmed: z.literal("true"),
 });
+
+const IDENTIFIER_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+function createIdentifier() {
+  return Array.from({ length: 6 }, () => IDENTIFIER_ALPHABET[randomInt(IDENTIFIER_ALPHABET.length)]).join("");
+}
 
 export async function POST(request: Request) {
   let uploaded: Awaited<ReturnType<typeof storeUpload>> | undefined;
@@ -31,7 +38,7 @@ export async function POST(request: Request) {
     const usage = await storageStatus();
     if (usage.blocked) return NextResponse.json({ error: "图片存储空间已达到暂停阈值，请联系管理员扩容后再生成" }, { status: 507 });
     const form = await request.formData();
-    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
+    const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), nameTemplate: form.get("nameTemplate"), models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "生成参数无效" }, { status: 400 });
     const inputFile = form.get("image");
     if (parsed.data.mode === "image-to-image" && !(inputFile instanceof File)) return NextResponse.json({ error: "图生图需要上传一张原图" }, { status: 400 });
@@ -54,6 +61,7 @@ export async function POST(request: Request) {
     const assetId = uploaded?.id || null;
     const dbClient = await pool.connect();
     const runIds: string[] = [];
+    let identifier = "";
     try {
       await dbClient.query("BEGIN");
       if (uploaded) await dbClient.query(
@@ -61,10 +69,17 @@ export async function POST(request: Request) {
          VALUES ($1,$2,'input',$3,$4,$5,$6,$7)`,
         [uploaded.id, uploaded.ownerId, uploaded.relativePath, uploaded.mediaType, uploaded.size, uploaded.sha256, uploaded.originalName],
       );
-      await dbClient.query(
-        `INSERT INTO generation_tasks(id,creator_id,mode,prompt,input_asset_id,settings,status) VALUES ($1,$2,$3,$4,$5,$6,'queued')`,
-        [taskId, user.id, parsed.data.mode, parsed.data.prompt, assetId, JSON.stringify(taskSettings)],
-      );
+      let insertedTask = false;
+      for (let attempt = 0; attempt < 10 && !insertedTask; attempt += 1) {
+        identifier = createIdentifier();
+        const result = await dbClient.query(
+          `INSERT INTO generation_tasks(id,creator_id,mode,prompt,name_template,identifier,input_asset_id,settings,status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued') ON CONFLICT (identifier) DO NOTHING RETURNING id`,
+          [taskId, user.id, parsed.data.mode, parsed.data.prompt, parsed.data.nameTemplate, identifier, assetId, JSON.stringify(taskSettings)],
+        );
+        insertedTask = Boolean(result.rowCount);
+      }
+      if (!insertedTask) throw new Error("无法生成唯一的创作标识，请重新提交");
       for (const requested of parsed.data.models) {
         const model = MODELS.find((item) => item.key === requested.modelKey)!;
         const runId = randomUUID();
@@ -96,7 +111,7 @@ export async function POST(request: Request) {
         if (queuedCount === 0) await query("UPDATE generation_tasks SET status='failed',finished_at=now() WHERE id=$1", [taskId]);
       }
     }
-    return NextResponse.json({ taskId, status: queuedCount ? "queued" : "failed", warning: queueWarning ? "部分模型未能进入后台队列，失败状态已记录" : undefined }, { status: 202 });
+    return NextResponse.json({ taskId, identifier, displayName: parsed.data.nameTemplate.replace("{标识}", identifier), status: queuedCount ? "queued" : "failed", warning: queueWarning ? "部分模型未能进入后台队列，失败状态已记录" : undefined }, { status: 202 });
   } catch (error) {
     if (uploaded && !taskCommitted) {
       try { const { removeMedia } = await import("@/server/media"); await removeMedia(uploaded.relativePath); } catch { /* orphan is reported by storage scan */ }
@@ -111,11 +126,11 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 100);
     const result = await query(
-      `SELECT t.id,t.mode,t.prompt,t.settings,t.status,t.created_at,t.finished_at,
+      `SELECT t.id,t.mode,t.prompt,t.name_template,t.identifier,t.settings,t.status,t.created_at,t.finished_at,
               u.display_name AS creator_name,
               COALESCE((SELECT json_agg(json_build_object('id',a.id,'kind',a.kind,'url','/api/assets/'||a.id,'width',a.width,'height',a.height,'mediaType',a.media_type) ORDER BY a.created_at)
                         FROM media_assets a WHERE a.task_id=t.id),'[]'::json) AS assets,
-              COALESCE((SELECT json_agg(json_build_object('id',r.id,'provider',r.provider,'modelKey',r.model_key,'modelId',r.model_id,'status',r.status,'requestedCount',r.requested_count,'imageCount',r.image_count,'usage',r.usage,'estimatedCost',r.estimated_cost,'currency',r.currency,'estimatedCostCny',r.estimated_cost_cny,'errorMessage',r.error_message,'startedAt',r.started_at,'finishedAt',r.finished_at,'outputs',COALESCE((SELECT json_agg(json_build_object('id',a.id,'url','/api/assets/'||a.id,'width',a.width,'height',a.height) ORDER BY a.created_at) FROM media_assets a WHERE a.run_id=r.id),'[]'::json))) ORDER BY r.created_at)
+              COALESCE((SELECT json_agg(json_build_object('id',r.id,'provider',r.provider,'modelKey',r.model_key,'modelId',r.model_id,'status',r.status,'requestedCount',r.requested_count,'imageCount',r.image_count,'usage',r.usage,'estimatedCost',r.estimated_cost,'currency',r.currency,'estimatedCostCny',r.estimated_cost_cny,'errorMessage',r.error_message,'startedAt',r.started_at,'finishedAt',r.finished_at,'outputs',COALESCE((SELECT json_agg(json_build_object('id',a.id,'url','/api/assets/'||a.id,'width',a.width,'height',a.height) ORDER BY a.created_at) FROM media_assets a WHERE a.run_id=r.id),'[]'::json)) ORDER BY r.created_at)
                         FROM provider_runs r WHERE r.task_id=t.id),'[]'::json) AS runs
        FROM generation_tasks t JOIN users u ON u.id=t.creator_id ORDER BY t.created_at DESC LIMIT $1`, [limit],
     );

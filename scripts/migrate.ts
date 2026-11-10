@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
   creator_id uuid NOT NULL REFERENCES users(id),
   mode text NOT NULL CHECK (mode IN ('text-to-image','image-to-image')),
   prompt text NOT NULL,
+  name_template text,
+  identifier text,
   input_asset_id uuid,
   settings jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','partial','failed','unknown')),
@@ -136,6 +138,9 @@ INSERT INTO schema_migrations(name) VALUES ('001_initial') ON CONFLICT DO NOTHIN
 
 try {
   await pool.query(schema);
+  await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS name_template text`);
+  await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS identifier text`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS generation_tasks_identifier_uidx ON generation_tasks(identifier)`);
   // Expand provider configuration support before seeding any newly supported providers.
   await pool.query(`ALTER TABLE provider_configs DROP CONSTRAINT IF EXISTS provider_configs_provider_check`);
   await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','deepseek'))`);

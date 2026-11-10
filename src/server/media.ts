@@ -29,7 +29,7 @@ function matchesMediaType(bytes: Buffer, mediaType: string) {
   return mediaType === "image/webp" && bytes.length >= 12 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP";
 }
 
-export async function storeGenerated(bytes: Uint8Array, mediaType: string, ownerId: string) {
+export async function storeGenerated(bytes: Uint8Array, mediaType: string, ownerId: string, requestedName = "generated") {
   if (!accepted.has(mediaType) || bytes.byteLength <= 0 || bytes.byteLength > 30 * 1024 * 1024 || !matchesMediaType(Buffer.from(bytes), mediaType)) {
     throw new Error("模型返回了无法安全保存的图片格式或内容");
   }
@@ -40,7 +40,8 @@ export async function storeGenerated(bytes: Uint8Array, mediaType: string, owner
   await mkdir(path.dirname(target), { recursive: true });
   await writeFile(target, bytes, { flag: "wx", mode: 0o640 });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
-  return { id, ownerId, relativePath, mediaType, size: bytes.length, sha256, originalName: `generated${ext}` };
+  const safeName = requestedName.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/\s+/g, " ").replace(/^[. ]+|[. ]+$/g, "").slice(0, 120) || "generated";
+  return { id, ownerId, relativePath, mediaType, size: bytes.length, sha256, originalName: `${safeName}${ext}` };
 }
 
 export async function resizeGenerated(bytes: Buffer, mediaType: string, width: number, height: number) {
