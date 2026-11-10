@@ -1,19 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowUpRight, Clock3, Download, ImagePlus, Search, Trash2 } from "lucide-react";
+import { ArrowUpRight, Clock3, Copy, Download, ImagePlus, Search } from "lucide-react";
 
 type Output = { id: string; url: string; originalName: string; width: number | null; height: number | null };
-type Run = { id: string; provider: string; modelKey: string; modelId: string; status: string; imageCount: number; estimatedCost: string | null; currency: string | null; estimatedCostCny: string | null; errorMessage: string | null; outputs: Output[] };
+type Run = { id: string; provider: string; modelKey: string; modelId: string; status: string; requestedCount: number; imageCount: number; estimatedCost: string | null; currency: string | null; estimatedCostCny: string | null; errorMessage: string | null; outputs: Output[] };
 type InputAsset = { id: string; kind: "input"; url: string; originalName: string; width: number | null; height: number | null; mediaType: string };
-type Task = { id: string; mode: string; prompt: string; name_template: string | null; identifier: string | null; tag_id: string | null; tag_name: string | null; tags?: Array<{ id: string; name: string }>; settings: Record<string, string>; status: string; created_at: string; creator_name: string; assets?: InputAsset[]; runs: Run[] };
+type Task = { id: string; mode: string; prompt: string; name_template: string | null; identifier: string | null; tag_id: string | null; tag_name: string | null; tags?: Array<{ id: string; name: string }>; settings: Record<string, string | number>; status: string; created_at: string; creator_name: string; assets?: InputAsset[]; runs: Run[] };
 type PreviewAsset = { id: string; url: string; originalName: string; kind: "input" | "output" };
 
 export default function HistoryPage() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [filter, setFilter] = useState("");
   const [error, setError] = useState("");
-  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
     fetch("/api/generations?limit=100", { cache: "no-store" }).then(async (response) => {
@@ -21,16 +20,31 @@ export default function HistoryPage() {
       if (!response.ok) throw new Error(data.error);
       setTasks(data.tasks || []);
     }).catch((reason) => setError(reason.message));
-    fetch("/api/me", { cache: "no-store" }).then((response) => response.json()).then((data) => setIsAdmin(data.user?.role === "admin")).catch(() => undefined);
   }, []);
 
-  async function deleteTask(id: string) {
-    if (!confirm("删除这条创作记录及其原图、结果图片？此操作不可撤销。")) return;
-    const response = await fetch(`/api/admin/tasks/${id}`, { method: "DELETE" });
-    const data = await response.json();
-    if (!response.ok) { setError(data.error || "删除失败"); return; }
-    setTasks((items) => items.filter((task) => task.id !== id));
-    if (data.cleanupPending) setError(`记录已删除，但有 ${data.cleanupPending} 个图片文件未能清理，已写入审计记录。`);
+  function copyTaskToStudio(task: Task) {
+    const legacyAliases: Record<string, string> = { I: "J", L: "M", O: "P", U: "V" };
+    const rawPrefix = (task.identifier?.slice(0, 4) || "").toUpperCase().replace(/[ILOU]/g, (character) => legacyAliases[character]);
+    const promptPrefix = /^[0-9A-HJKMNP-TV-Z]{4}$/.test(rawPrefix) ? rawPrefix : null;
+    const copy = {
+      mode: task.mode,
+      prompt: task.prompt,
+      nameTemplate: task.name_template || "{标识}",
+      promptPrefix,
+      tagIds: task.tags?.length ? task.tags.map((tag) => tag.id) : (task.tag_id ? [task.tag_id] : []),
+      models: task.runs.map((run) => ({ modelKey: run.modelKey, count: run.requestedCount || run.imageCount || 1 })),
+      settings: {
+        aspectRatio: task.settings?.aspectRatio || "1:1",
+        targetWidth: Number(task.settings?.targetWidth) || 1024,
+        targetHeight: Number(task.settings?.targetHeight) || 1024,
+      },
+    };
+    try {
+      window.sessionStorage.setItem("creative-studio-copy", JSON.stringify(copy));
+      window.location.assign("/");
+    } catch {
+      setError("无法临时保存这套配置，请重试");
+    }
   }
 
   const visible = tasks.filter((task) => `${task.prompt} ${task.creator_name} ${task.name_template || ""} ${task.identifier || ""} ${task.tags?.map((tag) => tag.name).join(" ") || task.tag_name || ""} ${task.runs.map((run) => run.modelId).join(" ")}`.toLowerCase().includes(filter.toLowerCase()));
@@ -46,7 +60,7 @@ export default function HistoryPage() {
       ].slice(0, 4);
       return <article className="history-card" key={task.id}>
         <div className="history-main">
-          <div className="history-meta"><span className={task.mode === "image-to-image" ? "history-type edit" : "history-type"}>{task.mode === "image-to-image" ? "图生图" : "文生图"}</span><span>{task.creator_name}</span><span>·</span><span>{new Date(task.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span><span className={`task-pill ${task.status}`}>{task.status === "succeeded" ? "已完成" : task.status === "partial" ? "部分完成" : task.status === "failed" ? "失败" : task.status === "unknown" ? "状态待核实" : "进行中"}</span>{task.runs.some((run) => run.outputs?.length) && <a className="history-task-download" href={`/api/generations/${task.id}/download`}><Download size={13} /> 下载任务压缩包</a>}{isAdmin && <button className="icon-button history-delete" title="删除这条创作记录" onClick={() => deleteTask(task.id)}><Trash2 size={14} /></button>}</div>
+          <div className="history-meta"><span className={task.mode === "image-to-image" ? "history-type edit" : "history-type"}>{task.mode === "image-to-image" ? "图生图" : "文生图"}</span><span>{task.creator_name}</span><span>·</span><span>{new Date(task.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span><span className={`task-pill ${task.status}`}>{task.status === "succeeded" ? "已完成" : task.status === "partial" ? "部分完成" : task.status === "failed" ? "失败" : task.status === "unknown" ? "状态待核实" : "进行中"}</span><button type="button" className="history-task-copy" onClick={() => copyTaskToStudio(task)}><Copy size={13} /> 一键复制</button>{task.runs.some((run) => run.outputs?.length) && <a className="history-task-download" href={`/api/generations/${task.id}/download`}><Download size={13} /> 下载任务压缩包</a>}</div>
           <p className="history-prompt">{task.prompt}</p>
           <div className="history-tags">{task.runs.map((run) => <span key={run.id}>{run.modelId}</span>)}<span>{task.settings?.aspectRatio || "1:1"} · {task.settings?.imageSize || "1K"}</span>{task.identifier && <span className="history-identifier">{task.identifier.length === 4 ? "提示词前缀" : "标识"} {task.identifier}</span>}{task.tags?.length ? task.tags.map((tag) => <span className="history-category-tag" key={tag.id}>{tag.name}</span>) : task.tag_name && <span className="history-category-tag">{task.tag_name}</span>}{task.name_template && task.identifier && task.name_template !== "{标识}" && <span>{task.name_template.replace("{标识}", task.identifier)}</span>}</div>
         </div>

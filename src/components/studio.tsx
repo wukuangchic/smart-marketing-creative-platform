@@ -72,6 +72,7 @@ export function Studio() {
   const [preview, setPreview] = useState("");
   const [selected, setSelected] = useState<string[]>(["bailian-qwen-image-3-pro", "gemini-3-1-flash-image"]);
   const [catalog, setCatalog] = useState<Record<string, CatalogEntry>>({});
+  const [modelCatalogReady, setModelCatalogReady] = useState(false);
   const [counts, setCounts] = useState<Record<string, number>>({ "bailian-qwen-image-3-pro": 1, "gemini-3-1-flash-image": 1 });
   const [aspectRatio, setAspectRatio] = useState("1:1");
   const [targetWidth, setTargetWidth] = useState("1024");
@@ -98,7 +99,7 @@ export function Studio() {
     fetch("/api/generations?limit=4", { cache: "no-store" }).then((res) => res.ok ? res.json() : null).then((data) => setRecent(data?.tasks || [])).catch(() => undefined);
     fetch("/api/tags", { cache: "no-store" }).then((res) => res.ok ? res.json() : null).then((data) => setTags(data?.tags || [])).catch(() => undefined);
     fetch("/api/models", { cache: "no-store" }).then((res) => res.ok ? res.json() : null).then((data) => {
-      if (!data?.models) return;
+      if (!data?.models) { setModelCatalogReady(true); return; }
       const entries = Object.fromEntries(data.models.map((model: { key: string; enabled: boolean; pricing?: CatalogEntry["pricing"]; priceCnyPerImage?: CatalogEntry["priceCnyPerImage"] }) => [model.key, {
         enabled: model.enabled,
         pricing: model.pricing,
@@ -106,8 +107,67 @@ export function Studio() {
       }])) as Record<string, CatalogEntry>;
       setCatalog(entries);
       setSelected((items) => items.filter((key) => entries[key]?.enabled));
-    }).catch(() => undefined);
+      setModelCatalogReady(true);
+    }).catch(() => setModelCatalogReady(true));
   }, []);
+
+  useEffect(() => {
+    if (!modelCatalogReady) return;
+    const storageKey = "creative-studio-copy";
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return;
+    window.sessionStorage.removeItem(storageKey);
+    try {
+      const copy = JSON.parse(raw) as {
+        mode?: string;
+        prompt?: string;
+        nameTemplate?: string;
+        promptPrefix?: string | null;
+        tagIds?: unknown[];
+        models?: Array<{ modelKey?: string; count?: number }>;
+        settings?: { aspectRatio?: string; targetWidth?: number; targetHeight?: number };
+      };
+      const copiedMode = copy.mode === "image-to-image" ? "image-to-image" : "text-to-image";
+      const copiedModels = Array.isArray(copy.models) ? copy.models : [];
+      const nextCounts: Record<string, number> = {};
+      const nextSelected: string[] = [];
+      let skippedModels = 0;
+      for (const requested of copiedModels) {
+        const model = MODELS.find((item) => item.key === requested.modelKey);
+        if (!model) { skippedModels += 1; continue; }
+        nextCounts[model.key] = Math.max(1, Math.min(model.maxImages, Math.floor(Number(requested.count) || 1)));
+        const compatible = copiedMode === "text-to-image" ? model.supportsTextToImage : model.supportsImageToImage;
+        if (catalog[model.key]?.enabled && compatible && !nextSelected.includes(model.key)) nextSelected.push(model.key);
+        else skippedModels += 1;
+      }
+      const ratio = String(copy.settings?.aspectRatio || "1:1");
+      const promptPrefix = typeof copy.promptPrefix === "string" && /^[0-9A-HJKMNP-TV-Z]{4}$/i.test(copy.promptPrefix)
+        ? copy.promptPrefix.toUpperCase() : null;
+      setMode(copiedMode);
+      setPrompt(typeof copy.prompt === "string" ? copy.prompt : "");
+      setNameTemplate(typeof copy.nameTemplate === "string" && copy.nameTemplate ? copy.nameTemplate : "{标识}");
+      setReusedPromptPrefix(promptPrefix);
+      setSelectedTagIds(Array.isArray(copy.tagIds) ? copy.tagIds.filter((id): id is string => typeof id === "string") : []);
+      setSelected(nextSelected);
+      setCounts(nextCounts);
+      setAspectRatio((SHARED_ASPECT_RATIOS as readonly string[]).includes(ratio) ? ratio : "1:1");
+      setTargetWidth(String(Math.max(256, Math.min(4096, Number(copy.settings?.targetWidth) || 1024))));
+      setTargetHeight(String(Math.max(256, Math.min(4096, Number(copy.settings?.targetHeight) || 1024))));
+      setImage(null);
+      if (fileRef.current) fileRef.current.value = "";
+      setTask(null);
+      setEstimate(null);
+      setEstimateOpen(false);
+      setTagPickerOpen(false);
+      setTagSearch("");
+      const availabilityNote = skippedModels ? `；${skippedModels} 个模型当前不可用或不支持该模式，已跳过` : "";
+      setMessage(copiedMode === "image-to-image"
+        ? `配置已复制${availabilityNote}；请重新上传原图，再手动点击「查看预估并生成」`
+        : `配置已复制${availabilityNote}，请手动点击「查看预估并生成」`);
+    } catch {
+      setMessage("复制的配置读取失败，请返回历史记录重试");
+    }
+  }, [catalog, modelCatalogReady]);
 
   useEffect(() => {
     if (!task || !["queued", "running"].includes(task.status)) return;
