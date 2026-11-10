@@ -9,7 +9,7 @@ import { jsonError, sameOrigin } from "@/server/http";
 const schema = z.object({
   mode: z.enum(["text-to-image", "image-to-image"]),
   prompt: z.string().trim().min(1).max(18000),
-  nameTemplate: z.string().trim().min(1).max(120).refine((value) => (value.match(/\{标识\}/g) || []).length === 1, "创作命名必须且只能包含一次 {标识}"),
+  nameTemplate: z.string().trim().min(1).max(120).refine((value) => (value.match(/\{标识\}/g) || []).length === 1 && (value.match(/\{序号\}/g) || []).length === 1, "创作命名必须且只能包含一次 {标识} 和 {序号}"),
   models: z.array(z.object({ modelKey: z.string(), count: z.coerce.number().int().min(1).max(20) })).min(1).max(MODELS.length),
   settings: z.object({
     aspectRatio: z.enum(SHARED_ASPECT_RATIOS),

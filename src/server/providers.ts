@@ -37,10 +37,10 @@ const MAX_GENERATED_BYTES = 30 * 1024 * 1024;
 export async function runProviderRun(runId: string) {
   const runResult = await query<{
     run_id: string; task_id: string; provider: ProviderSlug; model_key: string; model_id: string;
-    requested_count: number; mode: "text-to-image" | "image-to-image"; prompt: string; name_template: string | null; identifier: string | null; settings: { aspectRatio: string; imageSize: string; targetWidth?: number; targetHeight?: number };
+    requested_count: number; sequence_start: number; mode: "text-to-image" | "image-to-image"; prompt: string; name_template: string | null; identifier: string | null; settings: { aspectRatio: string; imageSize: string; targetWidth?: number; targetHeight?: number };
     input_asset_id: string | null; creator_id: string;
   }>(
-    `SELECT r.id AS run_id,r.task_id,r.provider,r.model_key,r.model_id,r.requested_count,
+    `SELECT r.id AS run_id,r.task_id,r.provider,r.model_key,r.model_id,r.requested_count,r.sequence_start,
             t.mode,t.prompt,t.name_template,t.identifier,t.settings,t.input_asset_id,t.creator_id
      FROM provider_runs r JOIN generation_tasks t ON t.id=r.task_id WHERE r.id=$1`, [runId],
   );
@@ -87,9 +87,10 @@ export async function runProviderRun(runId: string) {
       providerResult.usage.outputHeight = targetHeight;
     }
     for (const [index, output] of providerResult.outputs.entries()) {
-      const nameBase = run.name_template?.replace("{标识}", run.identifier || "") || "generated";
-      const modelLabel = run.model_key.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
-      const outputName = `${nameBase}-${modelLabel}-${String(index + 1).padStart(2, "0")}`;
+      const sequence = String(run.sequence_start + index).padStart(3, "0");
+      const template = run.name_template || "创意-{标识}-{序号}";
+      let outputName = template.replace("{标识}", run.identifier || "legacy").replace("{序号}", sequence);
+      if (!template.includes("{序号}")) outputName = `${outputName}-${sequence}`;
       const asset = await storeGenerated(output.bytes, output.mediaType, run.creator_id, outputName);
       const client = await (await import("./db")).pool.connect();
       try {

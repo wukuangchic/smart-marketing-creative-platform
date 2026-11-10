@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS users (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS creative_tags (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL CHECK (length(btrim(name)) BETWEEN 1 AND 40),
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS creative_tags_name_ci_uidx ON creative_tags(lower(name));
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash text PRIMARY KEY,
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -62,6 +69,7 @@ CREATE TABLE IF NOT EXISTS generation_tasks (
   prompt text NOT NULL,
   name_template text,
   identifier text,
+  tag_id uuid REFERENCES creative_tags(id) ON DELETE SET NULL,
   input_asset_id uuid,
   settings jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','partial','failed','unknown')),
@@ -77,6 +85,7 @@ CREATE TABLE IF NOT EXISTS provider_runs (
   model_id text NOT NULL,
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','unknown')),
   requested_count integer NOT NULL CHECK (requested_count > 0),
+  sequence_start integer NOT NULL DEFAULT 1 CHECK (sequence_start > 0),
   image_count integer NOT NULL DEFAULT 0,
   request_id text,
   usage jsonb,
@@ -140,7 +149,11 @@ try {
   await pool.query(schema);
   await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS name_template text`);
   await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS identifier text`);
+  await pool.query(`ALTER TABLE generation_tasks ADD COLUMN IF NOT EXISTS tag_id uuid REFERENCES creative_tags(id) ON DELETE SET NULL`);
   await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS generation_tasks_identifier_uidx ON generation_tasks(identifier)`);
+  await pool.query(`ALTER TABLE provider_runs ADD COLUMN IF NOT EXISTS sequence_start integer NOT NULL DEFAULT 1`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS media_assets_library_idx ON media_assets(kind,created_at DESC)`);
+  await pool.query("INSERT INTO schema_migrations(name) VALUES ('003_creative_tags_and_sequences') ON CONFLICT DO NOTHING");
   // Expand provider configuration support before seeding any newly supported providers.
   await pool.query(`ALTER TABLE provider_configs DROP CONSTRAINT IF EXISTS provider_configs_provider_check`);
   await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','deepseek'))`);

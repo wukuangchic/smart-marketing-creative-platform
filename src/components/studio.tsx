@@ -9,6 +9,8 @@ type Task = {
   status: string;
   name_template?: string | null;
   identifier?: string | null;
+  tag_id?: string | null;
+  tag_name?: string | null;
   created_at?: string;
   input_url?: string | null;
   runs: Array<{
@@ -35,6 +37,7 @@ type CatalogEntry = {
 };
 
 type PromptEntry = { prompt: string; uses: number; latest_at: string };
+type CreativeTag = { id: string; name: string; task_count?: number };
 type Estimate = {
   lines: Array<{ modelKey: string; modelName: string; count: number; nativeImageSize: string; estimatedCost: string; currency: string; estimatedCostCny: string | null }>;
   totalsByCurrency: Record<string, string>;
@@ -56,7 +59,11 @@ function formatAmount(value: string | number) {
 export function Studio() {
   const [mode, setMode] = useState<"text-to-image" | "image-to-image">("text-to-image");
   const [prompt, setPrompt] = useState("");
-  const [nameTemplate, setNameTemplate] = useState("创意-{标识}");
+  const [nameTemplate, setNameTemplate] = useState("创意-{标识}-{序号}");
+  const [tags, setTags] = useState<CreativeTag[]>([]);
+  const [selectedTagId, setSelectedTagId] = useState("");
+  const [newTagName, setNewTagName] = useState("");
+  const [savingTag, setSavingTag] = useState(false);
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
   const [selected, setSelected] = useState<string[]>(["bailian-qwen-image-3-pro", "gemini-3-1-flash-image"]);
@@ -85,6 +92,7 @@ export function Studio() {
 
   useEffect(() => {
     fetch("/api/generations?limit=4", { cache: "no-store" }).then((res) => res.ok ? res.json() : null).then((data) => setRecent(data?.tasks || [])).catch(() => undefined);
+    fetch("/api/tags", { cache: "no-store" }).then((res) => res.ok ? res.json() : null).then((data) => setTags(data?.tags || [])).catch(() => undefined);
     fetch("/api/models", { cache: "no-store" }).then((res) => res.ok ? res.json() : null).then((data) => {
       if (!data?.models) return;
       const entries = Object.fromEntries(data.models.map((model: { key: string; enabled: boolean; pricing?: CatalogEntry["pricing"]; priceCnyPerImage?: CatalogEntry["priceCnyPerImage"] }) => [model.key, {
@@ -146,7 +154,7 @@ export function Studio() {
 
   const outputCount = useMemo(() => selected.reduce((sum, model) => sum + (counts[model] || 1), 0), [selected, counts]);
   const isRunning = loading || Boolean(task && ["queued", "running"].includes(task.status));
-  const nameTemplateValid = (nameTemplate.match(/\{标识\}/g) || []).length === 1;
+  const nameTemplateValid = (nameTemplate.match(/\{标识\}/g) || []).length === 1 && (nameTemplate.match(/\{序号\}/g) || []).length === 1;
   const missingPriceRates = availableModels.some((model) => {
     const pricing = (catalog[model.key]?.pricing || model.defaultPricing) as { currency: string; perImage: Record<string, string | number> };
     const size = nativeImageSize(model, Number(targetWidth) || 1024, Number(targetHeight) || 1024);
@@ -171,8 +179,23 @@ export function Studio() {
 
   function setFile(file?: File) { if (!file) return; setImage(file); setMessage(""); }
 
+  async function createTag() {
+    const name = newTagName.trim();
+    if (!name) { setMessage("请输入分类标签名称"); return; }
+    setSavingTag(true); setMessage("");
+    try {
+      const response = await fetch("/api/tags", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "标签创建失败");
+      setTags((items) => [data.tag, ...items.filter((tag) => tag.id !== data.tag.id)].sort((a, b) => a.name.localeCompare(b.name, "zh-CN")));
+      setSelectedTagId(data.tag.id);
+      setNewTagName("");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "标签创建失败"); }
+    finally { setSavingTag(false); }
+  }
+
   async function requestEstimate() {
-    if (!nameTemplateValid) { setMessage("创作命名必须且只能包含一次 {标识}"); return; }
+    if (!nameTemplateValid) { setMessage("创作命名必须且只能包含一次 {标识} 和 {序号}"); return; }
     if (!prompt.trim() || !selected.length || (mode === "image-to-image" && !image)) return;
     setEstimating(true); setMessage("");
     try {
@@ -196,6 +219,7 @@ export function Studio() {
     form.set("mode", mode);
     form.set("prompt", prompt.trim());
     form.set("nameTemplate", nameTemplate.trim());
+    form.set("tagId", selectedTagId);
     form.set("models", JSON.stringify(selected.map((key) => ({ modelKey: key, count: counts[key] || 1 }))));
     form.set("settings", JSON.stringify({ aspectRatio, targetWidth: Number(targetWidth), targetHeight: Number(targetHeight) }));
     form.set("confirmed", "true");
@@ -206,7 +230,7 @@ export function Studio() {
       if (!response.ok) throw new Error(data.error || "提交失败");
       const statusResponse = await fetch(`/api/generations/${data.taskId}`, { cache: "no-store" });
       const statusData = statusResponse.ok ? await statusResponse.json() : null;
-      const created = statusData?.task || { id: data.taskId, status: data.status, name_template: nameTemplate.trim(), identifier: data.identifier, runs: [] } as Task;
+      const created = statusData?.task || { id: data.taskId, status: data.status, name_template: nameTemplate.trim(), identifier: data.identifier, tag_id: selectedTagId || null, tag_name: tags.find((tag) => tag.id === selectedTagId)?.name || null, runs: [] } as Task;
       setTask(created);
       setRecent((items) => [created, ...items].slice(0, 4));
       if (data.warning) setMessage(data.warning);
@@ -241,7 +265,7 @@ export function Studio() {
   const statusCount = Object.values(catalog).filter((entry) => entry.enabled).length;
   return <div className="studio-page">
     <header className="page-topbar"><div className="breadcrumb"><span>工作空间</span><span className="crumb-slash">/</span><b>创意生产</b></div><div className="topbar-right"><span className={statusCount ? "status-live" : "status-pending"}><i /> {statusCount} / {MODELS.length} 个模型已配置</span><button className="icon-button help-icon" title="帮助"><CircleHelp size={17} /></button></div></header>
-    <div className="studio-heading"><div><p className="eyebrow">IMAGE CREATION WORKSPACE</p><h1>把灵感，变成看得见的创意。</h1><p className="muted">描述你的想法，或上传一张图片开始创作。</p></div><button className="button button-quiet" onClick={() => { setTask(null); setPrompt(""); setNameTemplate("创意-{标识}"); setImage(null); }}><Plus size={16} /> 新建创作</button></div>
+    <div className="studio-heading"><div><p className="eyebrow">IMAGE CREATION WORKSPACE</p><h1>把灵感，变成看得见的创意。</h1><p className="muted">描述你的想法，或上传一张图片开始创作。</p></div><button className="button button-quiet" onClick={() => { setTask(null); setPrompt(""); setNameTemplate("创意-{标识}-{序号}"); setSelectedTagId(""); setNewTagName(""); setImage(null); }}><Plus size={16} /> 新建创作</button></div>
     <div className="mode-switch"><button onClick={() => switchMode("text-to-image")} className={mode === "text-to-image" ? "mode-option active" : "mode-option"}><span className="mode-icon"><WandSparkles size={16} /></span><span><b>文生图</b><small>从文字创造画面</small></span></button><button onClick={() => switchMode("image-to-image")} className={mode === "image-to-image" ? "mode-option active" : "mode-option"}><span className="mode-icon"><ImagePlus size={16} /></span><span><b>图生图</b><small>基于原图继续创作</small></span></button></div>
     <div className="studio-grid">
       <section className="prompt-panel card-surface">
@@ -251,7 +275,8 @@ export function Studio() {
           <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => setFile(event.target.files?.[0])} />
         </div>}
         <div className="prompt-box"><div className="prompt-box-top"><span><MessageSquareText size={14} /> 提示词</span><div className="prompt-top-actions"><span className="prompt-count">{prompt.length} / 18,000</span><button type="button" className="button button-quiet prompt-picker-button" onClick={openPromptPicker}><WandSparkles size={13} /> 历史提示词 · DeepSeek 重构</button></div></div><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder={mode === "text-to-image" ? "例如：一只橘猫坐在复古咖啡馆的窗边，午后阳光洒进来，胶片摄影质感……" : "例如：保持人物和构图不变，把背景改成海边日落，增加柔和的金色逆光……"} maxLength={18000} /><div className="prompt-hints"><span><Sparkles size={13} /> 描述主体、环境、光线和风格</span><span>Enter 换行</span></div></div>
-        <label className="task-name-field"><span>创作命名模板 <b>必填</b></span><input value={nameTemplate} onChange={(event) => setNameTemplate(event.target.value)} maxLength={120} placeholder="例如：夏季新品-{标识}" aria-invalid={!nameTemplateValid} /><small>{nameTemplateValid ? "{标识} 会替换为本次随机生成的 6 位字母数字码；同一套提示词和全部对比模型共用一个标识。" : "命名必须且只能包含一次 {标识}。"}</small></label>
+        <label className="task-name-field"><span>创作命名模板 <b>必填</b></span><input value={nameTemplate} onChange={(event) => setNameTemplate(event.target.value)} maxLength={120} placeholder="创意-{标识}-{序号}" aria-invalid={!nameTemplateValid} /><small>{nameTemplateValid ? "标识在本次提示词任务和所有对比模型间共用；序号按任务内所有结果连续递增。" : "命名必须且只能包含一次 {标识} 和 {序号}。"}</small></label>
+        <div className="category-field"><label><span>分类标签</span><select value={selectedTagId} onChange={(event) => setSelectedTagId(event.target.value)}><option value="">未分类</option>{tags.map((tag) => <option key={tag.id} value={tag.id}>{tag.name}</option>)}</select></label><div><input value={newTagName} onChange={(event) => setNewTagName(event.target.value)} maxLength={40} placeholder="新建分类标签" onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); void createTag(); } }} /><button type="button" className="button button-quiet" onClick={() => void createTag()} disabled={savingTag}>{savingTag ? "保存中" : "创建并使用"}</button></div></div>
         <div className="section-divider" />
         <div className="controls-heading"><div><span className="step-number">02</span><span><b>选择模型进行比较</b><small>按参考单价从低到高排列，可同时选择多个可用模型</small></span></div><span className="selected-counter">{selected.length} 个已选择</span></div>
         <div className="model-options">{availableModels.map((model) => {
@@ -281,7 +306,7 @@ export function Studio() {
             {run.outputs?.length ? <div className="result-images">{run.outputs.map((output) => <figure key={output.id}><img src={output.url} alt={`${model?.name}生成的作品`} /><a href={`${output.url}?download=1`} download className="image-download"><ArrowDownToLine size={15} /></a></figure>)}</div> : <div className={run.status === "failed" || run.status === "unknown" ? "result-placeholder failed" : "result-placeholder"}>{run.status === "failed" ? <span>{run.errorMessage || "生成失败"}</span> : run.status === "unknown" ? <span>{run.errorMessage || "请先核对供应商记录"}</span> : <><LoaderCircle className="spin" size={18} /><span>正在为你生成画面</span></>}</div>}
             <div className="result-card-foot"><span><Clock3 size={13} /> {run.status === "succeeded" ? `${run.imageCount} 张图片 · ${run.startedAt && run.finishedAt ? `${Math.max(1, Math.round((new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000))} 秒` : "已完成"}` : "等待结果"}</span><span className="cost-tag">{run.estimatedCost ? `估算 ${run.estimatedCost} ${run.currency}` : "成本待配置"}</span></div>
           </article>; })}</div></>}
-        {task && <div className="result-bottom-note"><span>命名 · {task.name_template && task.identifier ? task.name_template.replace("{标识}", task.identifier) : "旧记录"}　标识 · {task.identifier || "—"}</span><span>费用为估算值，以供应商账单为准</span></div>}
+        {task && <div className="result-bottom-note"><span>命名 · {task.name_template && task.identifier ? task.name_template.replace("{标识}", task.identifier) : "旧记录"}　标识 · {task.identifier || "—"}{task.tag_name ? `　分类 · ${task.tag_name}` : ""}</span><span>费用为估算值，以供应商账单为准</span></div>}
       </section>
     </div>
     <section className="recent-section"><div className="recent-heading"><div><p className="eyebrow">RECENT CREATIONS</p><h2>最近创作</h2></div><a href="/history">查看全部 <ArrowRight size={14} /></a></div><div className="recent-grid">{recent.length ? recent.slice(0, 4).map((item) => <a key={item.id} href="/history" className="recent-tile">{item.runs?.flatMap((run) => run.outputs || []).slice(0, 1).map((output) => <img key={output.id} src={output.url} alt="最近创作" />)}<div><b>{item.status === "succeeded" ? "已完成创作" : item.status === "failed" ? "生成未完成" : "创作进行中"}</b><small>{new Date(item.created_at || Date.now()).toLocaleDateString("zh-CN")}</small></div></a>) : <div className="recent-empty"><Clock3 size={16} /><span>你的近期作品会显示在这里</span></div>}</div></section>
