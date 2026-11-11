@@ -70,7 +70,10 @@ export async function GET(request: Request) {
               COALESCE(asset.identifier,task.identifier) AS identifier,task.identifier AS prompt_prefix,task.name_template,task.tag_id,tag.name AS tag_name,
               COALESCE((SELECT json_agg(json_build_object('id',task_label.id,'name',task_label.name) ORDER BY lower(task_label.name),task_label.created_at)
                         FROM generation_task_tags task_tag JOIN creative_tags task_label ON task_label.id=task_tag.tag_id WHERE task_tag.task_id=task.id),'[]'::json) AS tags,
-              run.provider,run.model_key,run.model_id,model.display_name AS model_name,task.prompt,task.settings
+              run.provider,run.model_key,run.model_id,model.display_name AS model_name,
+              CASE WHEN run.image_count>0 THEN run.estimated_cost/run.image_count END AS estimated_cost_per_image,
+              CASE WHEN run.image_count>0 THEN run.estimated_cost_cny/run.image_count END AS estimated_cost_cny_per_image,
+              run.currency,task.prompt,task.settings
        FROM media_assets asset
        JOIN generation_tasks task ON task.id=asset.task_id
        LEFT JOIN creative_tags tag ON tag.id=task.tag_id
