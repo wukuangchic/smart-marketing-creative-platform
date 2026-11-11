@@ -93,7 +93,10 @@ export default function MaterialsPage() {
       nameTemplate,
       promptPrefix,
       tagIds: asset.tags?.map((tag) => tag.id) || (asset.tag_id ? [asset.tag_id] : []),
-      models: [],
+      models: asset.model_key ? [{ modelKey: asset.model_key, count: 1 }] : [
+        { modelKey: "bailian-qwen-image-3-pro", count: 1 },
+        { modelKey: "gemini-3-1-flash-image", count: 1 },
+      ],
       settings: asset.settings || { aspectRatio: "1:1", targetWidth: 1024, targetHeight: 1024 },
       referenceAssets: [{ id: asset.id, originalName: asset.original_name }],
     };
