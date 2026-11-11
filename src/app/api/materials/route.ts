@@ -6,7 +6,7 @@ import { jsonError } from "@/server/http";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const PAGE_SIZE = 60;
+const PAGE_SIZES = new Set([20, 100, 500]);
 
 function validDate(value: string) {
   if (!DATE_PATTERN.test(value)) return false;
@@ -25,6 +25,8 @@ export async function GET(request: Request) {
     const tagMode = params.get("tagMode") === "all" ? "all" : "any";
     const provider = params.get("provider") || "";
     const modelKey = params.get("modelKey") || "";
+    const requestedLimit = Number.parseInt(params.get("limit") || "20", 10);
+    const limit = PAGE_SIZES.has(requestedLimit) ? requestedLimit : 20;
     const offset = Math.min(Math.max(Number.parseInt(params.get("offset") || "0", 10) || 0, 0), 1_000_000);
     if (identifier.length > 8 || (identifier && !/^[0-9a-z]+$/i.test(identifier))) return NextResponse.json({ error: "请输入有效的提示词前缀或素材标识" }, { status: 400 });
     if ((dateFrom && !validDate(dateFrom)) || (dateTo && !validDate(dateTo))) return NextResponse.json({ error: "日期格式无效" }, { status: 400 });
@@ -56,7 +58,7 @@ export async function GET(request: Request) {
     if (provider) conditions.push(`run.provider=${add(provider)}`);
     if (modelKey) conditions.push(`run.model_key=${add(modelKey)}`);
     const where = conditions.join(" AND ");
-    const pageValues = [...values, PAGE_SIZE, offset];
+    const pageValues = [...values, limit, offset];
     const [count, rows, modelOptions] = await Promise.all([query<{ total: number }>(
       `SELECT COUNT(*)::int AS total
        FROM media_assets asset JOIN generation_tasks task ON task.id=asset.task_id LEFT JOIN provider_runs run ON run.id=asset.run_id
@@ -90,6 +92,6 @@ export async function GET(request: Request) {
       provider_name: PROVIDERS[model.provider as keyof typeof PROVIDERS]?.shortName || model.provider,
       model_name: model.model_name || model.model_id,
     }));
-    return NextResponse.json({ assets: rows.rows, total: count.rows[0]?.total || 0, offset, limit: PAGE_SIZE, models });
+    return NextResponse.json({ assets: rows.rows, total: count.rows[0]?.total || 0, offset, limit, models });
   } catch (error) { return jsonError(error); }
 }

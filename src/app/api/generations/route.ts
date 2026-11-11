@@ -153,8 +153,29 @@ export async function GET(request: Request) {
   try {
     await requireUser();
     const url = new URL(request.url);
-    const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 50), 1), 100);
-    const result = await query(
+    const limit = Math.min(Math.max(Number.parseInt(url.searchParams.get("limit") || "50", 10) || 50, 1), 500);
+    const offset = Math.min(Math.max(Number.parseInt(url.searchParams.get("offset") || "0", 10) || 0, 0), 1_000_000);
+    const search = (url.searchParams.get("search") || "").trim().slice(0, 200);
+    const values: unknown[] = [];
+    const conditions: string[] = [];
+    if (search) {
+      values.push(`%${search}%`);
+      const pattern = `$${values.length}`;
+      conditions.push(`(
+        t.prompt ILIKE ${pattern} OR u.display_name ILIKE ${pattern} OR COALESCE(t.name_template,'') ILIKE ${pattern}
+        OR COALESCE(t.identifier,'') ILIKE ${pattern}
+        OR EXISTS (SELECT 1 FROM generation_task_tags search_tag JOIN creative_tags tag ON tag.id=search_tag.tag_id WHERE search_tag.task_id=t.id AND tag.name ILIKE ${pattern})
+        OR EXISTS (SELECT 1 FROM provider_runs search_run WHERE search_run.task_id=t.id AND (search_run.model_id ILIKE ${pattern} OR search_run.model_key ILIKE ${pattern}))
+      )`);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    const pageValues = [...values, limit, offset];
+    const [count, result] = await Promise.all([query<{ total: number }>(
+      `SELECT COUNT(*)::int AS total
+       FROM generation_tasks t JOIN users u ON u.id=t.creator_id
+       ${where}`,
+      values,
+    ), query(
       `SELECT t.id,t.mode,t.prompt,t.name_template,t.identifier,t.tag_id,ct.name AS tag_name,
               COALESCE((SELECT json_agg(json_build_object('id',tag.id,'name',tag.name) ORDER BY lower(tag.name),tag.created_at)
                         FROM generation_task_tags task_tag JOIN creative_tags tag ON tag.id=task_tag.tag_id WHERE task_tag.task_id=t.id),'[]'::json) AS tags,
@@ -164,8 +185,11 @@ export async function GET(request: Request) {
                         FROM media_assets a WHERE a.task_id=t.id),'[]'::json) AS assets,
               COALESCE((SELECT json_agg(json_build_object('id',r.id,'provider',r.provider,'modelKey',r.model_key,'modelId',r.model_id,'status',r.status,'requestedCount',r.requested_count,'imageCount',r.image_count,'usage',r.usage,'estimatedCost',r.estimated_cost,'currency',r.currency,'estimatedCostCny',r.estimated_cost_cny,'errorMessage',r.error_message,'startedAt',r.started_at,'finishedAt',r.finished_at,'outputs',COALESCE((SELECT json_agg(json_build_object('id',a.id,'url','/api/assets/'||a.id,'width',a.width,'height',a.height,'originalName',a.original_name,'identifier',a.identifier) ORDER BY a.created_at) FROM media_assets a WHERE a.run_id=r.id),'[]'::json)) ORDER BY r.created_at)
                         FROM provider_runs r WHERE r.task_id=t.id),'[]'::json) AS runs
-       FROM generation_tasks t JOIN users u ON u.id=t.creator_id LEFT JOIN creative_tags ct ON ct.id=t.tag_id ORDER BY t.created_at DESC LIMIT $1`, [limit],
-    );
-    return NextResponse.json({ tasks: result.rows });
+       FROM generation_tasks t JOIN users u ON u.id=t.creator_id LEFT JOIN creative_tags ct ON ct.id=t.tag_id
+       ${where}
+       ORDER BY t.created_at DESC,t.id DESC LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,
+      pageValues,
+    )]);
+    return NextResponse.json({ tasks: result.rows, total: count.rows[0]?.total || 0, offset, limit });
   } catch (error) { return jsonError(error); }
 }

@@ -7,7 +7,7 @@ type Tag = { id: string; name: string };
 type ModelOption = { provider: string; provider_name: string; model_key: string; model_id: string; model_name: string };
 type Material = { id: string; original_name: string; media_type: string; width: number | null; height: number | null; size_bytes: string; created_at: string; identifier: string | null; prompt_prefix: string | null; name_template: string | null; tag_id: string | null; tag_name: string | null; tags?: Tag[]; provider: string | null; model_key: string | null; model_id: string | null; model_name: string | null };
 type Filters = { identifier: string; dateFrom: string; dateTo: string; tagIds: string[]; tagMode: "any" | "all"; provider: string; modelKey: string };
-const PAGE_SIZE = 60;
+const PAGE_SIZES = [20, 100, 500] as const;
 const EMPTY_FILTERS: Filters = { identifier: "", dateFrom: "", dateTo: "", tagIds: [], tagMode: "any", provider: "", modelKey: "" };
 
 export default function MaterialsPage() {
@@ -15,7 +15,8 @@ export default function MaterialsPage() {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
   const [assets, setAssets] = useState<Material[]>([]);
   const [total, setTotal] = useState(0);
-  const [offset, setOffset] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(20);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [draft, setDraft] = useState<Filters>(EMPTY_FILTERS);
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
@@ -31,7 +32,7 @@ export default function MaterialsPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    const params = new URLSearchParams({ offset: String(offset) });
+    const params = new URLSearchParams({ offset: String((page - 1) * pageSize), limit: String(pageSize) });
     if (filters.identifier.trim()) params.set("identifier", filters.identifier.trim());
     if (filters.dateFrom) params.set("dateFrom", filters.dateFrom);
     if (filters.dateTo) params.set("dateTo", filters.dateTo);
@@ -39,19 +40,19 @@ export default function MaterialsPage() {
     if (filters.tagIds.length) params.set("tagMode", filters.tagMode);
     if (filters.provider) params.set("provider", filters.provider);
     if (filters.modelKey) params.set("modelKey", filters.modelKey);
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setAssets([]);
     fetch(`/api/materials?${params}`, { cache: "no-store", signal: controller.signal }).then(async (response) => {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "素材读取失败");
-      setAssets((current) => offset === 0 ? data.assets : [...current, ...data.assets]);
+      setAssets(data.assets || []);
       setTotal(data.total || 0);
       setModelOptions(data.models || []);
     }).catch((reason) => { if (reason.name !== "AbortError") setError(reason.message || "素材读取失败"); }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [filters, offset]);
+  }, [filters, page, pageSize]);
 
   function applyFilters() {
-    setOffset(0);
+    setPage(1);
     setFilters({ ...draft, tagIds: [...draft.tagIds], identifier: draft.identifier.trim() });
   }
 
@@ -64,7 +65,7 @@ export default function MaterialsPage() {
   }
 
   function toggleCurrentPage() {
-    const pageIds = assets.slice(Math.max(0, assets.length - PAGE_SIZE)).map((asset) => asset.id);
+    const pageIds = assets.map((asset) => asset.id);
     const allSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
     setSelected((current) => { const next = new Set(current); for (const id of pageIds) allSelected ? next.delete(id) : next.add(id); return next; });
   }
@@ -86,8 +87,8 @@ export default function MaterialsPage() {
     finally { setDownloading(false); }
   }
 
-  const currentPage = assets.slice(Math.max(0, assets.length - PAGE_SIZE));
-  const pageSelected = currentPage.length > 0 && currentPage.every((asset) => selected.has(asset.id));
+  const pageSelected = assets.length > 0 && assets.every((asset) => selected.has(asset.id));
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
   return <div className="subpage materials-page">
     <header className="page-topbar"><div className="breadcrumb"><span>工作空间</span><span className="crumb-slash">/</span><b>素材库</b></div><span className="materials-total">{total} 张生成素材</span></header>
     <div className="subpage-heading"><div><p className="eyebrow">CREATIVE ASSETS</p><h1>素材库</h1><p className="muted">按标识、日期、标签、模型供应商和模型查找已生成素材。</p></div></div>
@@ -99,15 +100,15 @@ export default function MaterialsPage() {
       <label><span>模型供应商</span><select value={draft.provider} onChange={(event) => setDraft((value) => ({ ...value, provider: event.target.value, modelKey: value.modelKey && modelOptions.some((model) => model.model_key === value.modelKey && model.provider === event.target.value) ? value.modelKey : "" }))}><option value="">全部供应商</option>{Array.from(new Map(modelOptions.map((model) => [model.provider, model.provider_name])).entries()).map(([provider, name]) => <option key={provider} value={provider}>{name}</option>)}</select></label>
       <label><span>生成模型</span><select value={draft.modelKey} onChange={(event) => setDraft((value) => ({ ...value, modelKey: event.target.value }))}><option value="">全部模型</option>{modelOptions.filter((model) => !draft.provider || model.provider === draft.provider).map((model) => <option key={model.model_key} value={model.model_key}>{model.model_name}</option>)}</select></label>
       <button className="button button-primary" onClick={applyFilters}><Filter size={14} /> 筛选</button>
-      <button className="button button-quiet" onClick={() => { setDraft(EMPTY_FILTERS); setTagSearch(""); setTagMenuOpen(false); setOffset(0); setFilters(EMPTY_FILTERS); }}><X size={14} /> 重置</button>
+      <button className="button button-quiet" onClick={() => { setDraft(EMPTY_FILTERS); setTagSearch(""); setTagMenuOpen(false); setPage(1); setFilters(EMPTY_FILTERS); }}><X size={14} /> 重置</button>
     </section>
     {error && <div className="notice notice-error">{error}</div>}
     <div className="materials-toolbar"><div><button className="button button-quiet" onClick={toggleCurrentPage} disabled={!assets.length}>{pageSelected ? "取消本页选择" : "选择本页"}</button><span className="selected-count">已选 {selected.size} 张{selected.size > 100 ? " · 每次最多下载 100 张" : ""}</span></div><button className="button button-primary" onClick={() => void downloadSelected()} disabled={!selected.size || selected.size > 100 || downloading}>{downloading ? <><LoaderCircle size={14} className="spin" /> 正在打包</> : <><Download size={14} /> 下载所选素材</>}</button></div>
     {loading && !assets.length ? <div className="materials-loading"><LoaderCircle size={20} className="spin" /> 正在加载素材</div> : assets.length ? <div className="materials-grid">{assets.map((asset) => <article className={selected.has(asset.id) ? "material-card selected" : "material-card"} key={asset.id}>
       <label className="material-select" title={selected.has(asset.id) ? "取消选择" : "选择素材"}><input type="checkbox" checked={selected.has(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>{selected.has(asset.id) && <Check size={12} />}</span></label>
-      <a className="material-image" href={`/api/assets/${asset.id}`} target="_blank" rel="noreferrer"><img src={`/api/assets/${asset.id}`} alt={asset.original_name} loading="lazy" /></a>
+      <a className="material-image" href={`/api/assets/${asset.id}`} target="_blank" rel="noreferrer"><img src={`/api/assets/${asset.id}/thumbnail`} alt={asset.original_name} loading="lazy" /></a>
       <div className="material-meta"><b title={asset.original_name}>{asset.original_name}</b><span>{asset.tags?.length ? asset.tags.map((tag) => tag.name).join(" · ") : asset.tag_name || "未分类"} · {asset.identifier || "旧素材"}</span><small>{asset.model_name || asset.model_id || "未知模型"} · {new Date(asset.created_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}{asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}</small></div>
     </article>)}</div> : !loading && <div className="empty-state materials-empty"><ImageIcon size={22} /><b>{filters.identifier || filters.dateFrom || filters.dateTo || filters.tagIds.length || filters.provider || filters.modelKey ? "没有符合条件的素材" : "素材库还是空的"}</b><span>完成图片创作后，生成结果会自动收录在这里。</span></div>}
-    {assets.length < total && <div className="materials-more"><button className="button button-quiet" onClick={() => setOffset((value) => value + PAGE_SIZE)} disabled={loading}>{loading ? "加载中…" : "加载更多"}</button></div>}
+    {total > 0 && <div className="materials-pagination"><label>每页显示<select className="period-select" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{PAGE_SIZES.map((size) => <option key={size} value={size}>{size} 张</option>)}</select></label><span>第 {page} / {pageCount} 页 · 共 {total} 张</span><div><button type="button" className="button button-quiet" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1 || loading}>上一页</button><button type="button" className="button button-quiet" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={page >= pageCount || loading}>下一页</button></div></div>}
   </div>;
 }
