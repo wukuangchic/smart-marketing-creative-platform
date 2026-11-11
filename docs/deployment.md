@@ -30,7 +30,7 @@ chmod 700 secrets
 - 百炼和 Gemini 图像 API 凭证只在管理员准备好后设置。
 - 账单连接器配置好只读权限和账单范围后才填写相应账单环境变量。
 
-Google Billing 服务账号 JSON 放入服务器 `secrets/google-billing.json`（权限 `0600`）。BigQuery 服务账号仅授予读取指定账单数据集的权限。阿里云 RAM 用户仅授予 `bssapi:DescribeInstanceBill`。设置 `BAILIAN_BILLING_PRODUCT_CODE` 可只导入指定产品；设置 `BAILIAN_BILLING_INCLUDE_ALL_PRODUCTS=1` 会按月读取整个阿里云账号的账单，并在账单页区分百炼与其他云产品（包括 ECS 及相关资源）。AccessKey 只保存在服务器环境变量中。
+Google Billing 服务账号 JSON 放入服务器 `secrets/google-billing.json`（权限 `0600`）。BigQuery 服务账号仅授予读取指定账单数据集的权限。阿里云 RAM 用户仅授予 `bssapi:DescribeInstanceBill`。设置 `BAILIAN_BILLING_PRODUCT_CODE` 可只导入指定产品；设置 `BAILIAN_BILLING_INCLUDE_ALL_PRODUCTS=1` 会读取整个阿里云账号的账单，并在账单页区分百炼与其他云产品（包括 ECS 及相关资源）。`BAILIAN_BILLING_START_DATE` 默认是 `2026-11-07`；阿里云账单按日读取，仅展示此日期起的记录。模型单价追溯只对存在模型名、图片用量和正数账单金额的百炼账单行计算，采用当日金额除以当日图片用量；不改写后台配置的参考价。AccessKey 只保存在服务器环境变量中。
 
 启动并查看服务状态：
 

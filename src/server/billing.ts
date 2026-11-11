@@ -16,7 +16,19 @@ type InvoiceLine = {
   currency: string;
   sourceId: string;
   raw: Record<string, unknown>;
+  periodStart?: Date;
+  periodEnd?: Date;
+  usageAmount?: number | null;
 };
+
+export function aliyunBillingStartDate() {
+  const value = process.env.BAILIAN_BILLING_START_DATE || "2026-11-07";
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new Error("阿里云账单起始日期必须采用 YYYY-MM-DD 格式");
+  }
+  return value;
+}
 
 export function billingConnectorStatus() {
   const bailianReady = Boolean(
@@ -40,15 +52,15 @@ export function billingConnectorStatus() {
 export async function importProviderBill(provider: BillingProvider, billingCycle: string): Promise<BillingImportResult> {
   assertBillingCycle(billingCycle);
   const lines = provider === "bailian" ? await fetchBailianBill(billingCycle) : await fetchGoogleBill(billingCycle);
-  const { start, end } = cycleWindow(billingCycle);
   for (const line of lines) {
     await query(
-      `INSERT INTO invoices(provider,account_id,model_id,period_start,period_end,amount,currency,source_id,raw)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO invoices(provider,account_id,model_id,period_start,period_end,amount,currency,usage_amount,source_id,raw)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT(provider,account_id,source_id) DO UPDATE SET
          model_id=EXCLUDED.model_id,period_start=EXCLUDED.period_start,period_end=EXCLUDED.period_end,
-         amount=EXCLUDED.amount,currency=EXCLUDED.currency,raw=EXCLUDED.raw,imported_at=now()`,
-      [line.storedProvider || provider, line.accountId, line.modelId, start, end, line.amount, line.currency, line.sourceId, JSON.stringify(line.raw)],
+         amount=EXCLUDED.amount,currency=EXCLUDED.currency,usage_amount=EXCLUDED.usage_amount,raw=EXCLUDED.raw,imported_at=now()`,
+      [line.storedProvider || provider, line.accountId, line.modelId, line.periodStart || cycleWindow(billingCycle).start,
+        line.periodEnd || cycleWindow(billingCycle).end, line.amount, line.currency, line.usageAmount ?? null, line.sourceId, JSON.stringify(line.raw)],
     );
   }
   return { provider, billingCycle, imported: lines.length };
@@ -69,39 +81,54 @@ async function fetchBailianBill(billingCycle: string): Promise<InvoiceLine[]> {
     apiVersion: "2017-12-14",
     opts: { timeout: 30_000 },
   });
-  const all: Array<Record<string, unknown>> = [];
-  let nextToken = "";
-  for (let page = 0; page < 200; page += 1) {
-    const response = await client.request("DescribeInstanceBill", {
-      BillingCycle: billingCycle,
-      IsBillingItem: true,
-      IsHideZeroCharge: true,
-      Granularity: "MONTHLY",
-      MaxResults: 300,
-      ...(!includeAllProducts ? {
-        ProductCode: productCode,
-        ...(process.env.BAILIAN_BILLING_PRODUCT_TYPE ? { ProductType: process.env.BAILIAN_BILLING_PRODUCT_TYPE } : {}),
-        ...(process.env.BAILIAN_BILLING_PIP_CODE ? { PipCode: process.env.BAILIAN_BILLING_PIP_CODE } : {}),
-      } : {}),
-      ...(nextToken ? { NextToken: nextToken } : {}),
-    }, { method: "POST", formatParams: false, timeout: 30_000 }) as Record<string, unknown>;
-    const body = (response.Body || response) as Record<string, unknown>;
-    if (body.Success === false || (body.Code && body.Code !== "Success")) {
-      throw new Error(`阿里云账单查询失败（${String(body.Code || "unknown").slice(0, 80)}）`);
+  const { start: cycleStart, end: cycleEnd } = cycleWindow(billingCycle);
+  const scopeStart = new Date(`${aliyunBillingStartDate()}T00:00:00.000Z`);
+  const firstDate = new Date(Math.max(cycleStart.getTime(), scopeStart.getTime()));
+  const yesterday = new Date();
+  yesterday.setUTCHours(0, 0, 0, 0);
+  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+  const lastDate = new Date(Math.min(cycleEnd.getTime() - 86_400_000, yesterday.getTime()));
+  if (firstDate > lastDate) return [];
+
+  const imported: InvoiceLine[] = [];
+  for (const day = new Date(firstDate); day <= lastDate; day.setUTCDate(day.getUTCDate() + 1)) {
+    const billingDate = day.toISOString().slice(0, 10);
+    const dayItems: Array<Record<string, unknown>> = [];
+    let nextToken = "";
+    for (let page = 0; page < 200; page += 1) {
+      const response = await client.request("DescribeInstanceBill", {
+        BillingCycle: billingCycle,
+        BillingDate: billingDate,
+        IsBillingItem: true,
+        IsHideZeroCharge: true,
+        Granularity: "DAILY",
+        MaxResults: 300,
+        ...(!includeAllProducts ? {
+          ProductCode: productCode,
+          ...(process.env.BAILIAN_BILLING_PRODUCT_TYPE ? { ProductType: process.env.BAILIAN_BILLING_PRODUCT_TYPE } : {}),
+          ...(process.env.BAILIAN_BILLING_PIP_CODE ? { PipCode: process.env.BAILIAN_BILLING_PIP_CODE } : {}),
+        } : {}),
+        ...(nextToken ? { NextToken: nextToken } : {}),
+      }, { method: "POST", formatParams: false, timeout: 30_000 }) as Record<string, unknown>;
+      const body = (response.Body || response) as Record<string, unknown>;
+      if (body.Success === false || (body.Code && body.Code !== "Success")) {
+        throw new Error(`阿里云账单查询失败（${String(body.Code || "unknown").slice(0, 80)}）`);
+      }
+      const data = body.Data as Record<string, unknown> | undefined;
+      const items = data?.Items;
+      const nestedItems = items && typeof items === "object" ? (items as Record<string, unknown>).Item : undefined;
+      const pageItems = Array.isArray(items) ? items : Array.isArray(nestedItems) ? nestedItems : [];
+      dayItems.push(...pageItems.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")));
+      nextToken = typeof data?.NextToken === "string" ? data.NextToken : "";
+      if (!nextToken) break;
+      if (page === 199) throw new Error("阿里云账单分页超过 200 页，请缩小账单查询范围");
     }
-    const data = body.Data as Record<string, unknown> | undefined;
-    const items = data?.Items;
-    const nestedItems = items && typeof items === "object" ? (items as Record<string, unknown>).Item : undefined;
-    const pageItems = Array.isArray(items) ? items : Array.isArray(nestedItems) ? nestedItems : [];
-    all.push(...pageItems.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")));
-    nextToken = typeof data?.NextToken === "string" ? data.NextToken : "";
-    if (!nextToken) break;
-    if (page === 199) throw new Error("阿里云账单分页超过 200 页，请缩小账单查询范围");
+    imported.push(...parseBailianBillItems(billingCycle, dayItems, productCode, billingDate));
   }
-  return parseBailianBillItems(billingCycle, all, productCode);
+  return imported;
 }
 
-export function parseBailianBillItems(billingCycle: string, all: Array<Record<string, unknown>>, defaultProductCode = "aliyun-billing-item") {
+export function parseBailianBillItems(billingCycle: string, all: Array<Record<string, unknown>>, defaultProductCode = "aliyun-billing-item", billingDate?: string) {
   const accountId = String(all[0]?.BillAccountID || all[0]?.OwnerID || "aliyun-account");
   return all.flatMap((item, index) => {
     const amount = Number(item.AfterDiscountAmount ?? item.PretaxAmount);
@@ -109,9 +136,19 @@ export function parseBailianBillItems(billingCycle: string, all: Array<Record<st
     if (!Number.isFinite(amount)) return [];
     const productName = String(item.ProductName || item.ProductDetail || "");
     const isBailian = /百炼|model\s*studio/i.test(productName);
+    const itemBillingDate = String(item.BillingDate || billingDate || "");
+    const periodStart = itemBillingDate ? new Date(`${itemBillingDate}T00:00:00.000Z`) : cycleWindow(billingCycle).start;
+    const periodEnd = itemBillingDate ? new Date(periodStart.getTime() + 86_400_000) : cycleWindow(billingCycle).end;
+    const rawUsage = item.Usage;
+    const usageAmount = rawUsage === undefined || rawUsage === null || rawUsage === "" ? null : Number(rawUsage);
+    const usageUnit = String(item.UsageUnit || "");
+    const instanceId = String(item.InstanceID || "");
+    const instanceParts = instanceId.split(";");
+    const tracedModel = instanceParts.length >= 3 ? instanceParts[2].trim() : "";
     const source = {
+      billingDate: itemBillingDate,
       index,
-      instanceId: item.InstanceID || "",
+      instanceId,
       productCode: item.ProductCode || defaultProductCode,
       pipCode: item.PipCode || "",
       billingItemCode: item.BillingItemCode || "",
@@ -119,16 +156,21 @@ export function parseBailianBillItems(billingCycle: string, all: Array<Record<st
       itemName: item.ItemName || "",
       amount,
       currency,
+      usage: Number.isFinite(usageAmount) ? usageAmount : null,
+      usageUnit,
     };
     return [{
       storedProvider: isBailian ? "bailian" as const : "aliyun" as const,
       accountId: String(item.BillAccountID || item.OwnerID || accountId),
       modelId: isBailian
-        ? String(item.BillingItem || item.ProductDetail || item.ProductName || item.ProductCode || defaultProductCode)
+        ? String(tracedModel || item.BillingItem || item.ProductDetail || item.ProductName || item.ProductCode || defaultProductCode)
         : [item.ProductName, item.ProductDetail || item.BillingItem].filter(Boolean).join(" / ") || String(item.ProductCode || defaultProductCode),
       amount,
       currency,
       sourceId: stableId(billingCycle, source),
+      periodStart,
+      periodEnd,
+      usageAmount: Number.isFinite(usageAmount) ? usageAmount : null,
       raw: { ...item, periodType: "provider bill detail; not an individual image charge" },
     }];
   });
