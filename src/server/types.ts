@@ -58,7 +58,7 @@ export interface GenerationTask {
 }
 
 export interface InvoiceRecord {
-  provider: ProviderSlug;
+  provider: ProviderSlug | "aliyun";
   accountId: string;
   modelId: string | null;
   periodStart: string;

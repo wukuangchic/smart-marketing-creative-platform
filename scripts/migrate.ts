@@ -157,6 +157,8 @@ CREATE TABLE IF NOT EXISTS invoices (
   imported_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(provider,account_id,source_id)
 );
+ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_provider_check;
+ALTER TABLE invoices ADD CONSTRAINT invoices_provider_check CHECK (provider IN ('bailian','aliyun','gemini'));
 CREATE TABLE IF NOT EXISTS audit_logs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   actor_id uuid REFERENCES users(id) ON DELETE SET NULL,

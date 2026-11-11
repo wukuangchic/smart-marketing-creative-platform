@@ -9,6 +9,7 @@ export type BillingProvider = "bailian" | "gemini";
 export type BillingImportResult = { provider: BillingProvider; billingCycle: string; imported: number };
 
 type InvoiceLine = {
+  storedProvider?: "aliyun" | "bailian";
   accountId: string;
   modelId: string;
   amount: number;
@@ -21,7 +22,7 @@ export function billingConnectorStatus() {
   const bailianReady = Boolean(
     process.env.BAILIAN_BILLING_ACCESS_KEY_ID &&
     process.env.BAILIAN_BILLING_ACCESS_KEY_SECRET &&
-    process.env.BAILIAN_BILLING_PRODUCT_CODE,
+    (process.env.BAILIAN_BILLING_PRODUCT_CODE || process.env.BAILIAN_BILLING_INCLUDE_ALL_PRODUCTS === "1"),
   );
   const googleReady = Boolean(
     (process.env.GOOGLE_BILLING_SERVICE_ACCOUNT_JSON || (process.env.GOOGLE_BILLING_SERVICE_ACCOUNT_FILE && existsSync(process.env.GOOGLE_BILLING_SERVICE_ACCOUNT_FILE))) &&
@@ -47,7 +48,7 @@ export async function importProviderBill(provider: BillingProvider, billingCycle
        ON CONFLICT(provider,account_id,source_id) DO UPDATE SET
          model_id=EXCLUDED.model_id,period_start=EXCLUDED.period_start,period_end=EXCLUDED.period_end,
          amount=EXCLUDED.amount,currency=EXCLUDED.currency,raw=EXCLUDED.raw,imported_at=now()`,
-      [provider, line.accountId, line.modelId, start, end, line.amount, line.currency, line.sourceId, JSON.stringify(line.raw)],
+      [line.storedProvider || provider, line.accountId, line.modelId, start, end, line.amount, line.currency, line.sourceId, JSON.stringify(line.raw)],
     );
   }
   return { provider, billingCycle, imported: lines.length };
@@ -57,7 +58,8 @@ async function fetchBailianBill(billingCycle: string): Promise<InvoiceLine[]> {
   const accessKeyId = process.env.BAILIAN_BILLING_ACCESS_KEY_ID;
   const accessKeySecret = process.env.BAILIAN_BILLING_ACCESS_KEY_SECRET;
   const productCode = process.env.BAILIAN_BILLING_PRODUCT_CODE;
-  if (!accessKeyId || !accessKeySecret || !productCode) throw new Error("百炼账单连接器缺少只读凭证或产品代码配置");
+  const includeAllProducts = process.env.BAILIAN_BILLING_INCLUDE_ALL_PRODUCTS === "1";
+  if (!accessKeyId || !accessKeySecret || (!productCode && !includeAllProducts)) throw new Error("阿里云账单连接器缺少只读凭证或账单范围配置");
   const require = createRequire(import.meta.url);
   const sdk = require("@alicloud/pop-core") as { RPCClient: new (options: Record<string, unknown>) => { request: (action: string, params: Record<string, unknown>, options: Record<string, unknown>) => Promise<unknown> } };
   const client = new sdk.RPCClient({
@@ -76,14 +78,16 @@ async function fetchBailianBill(billingCycle: string): Promise<InvoiceLine[]> {
       IsHideZeroCharge: true,
       Granularity: "MONTHLY",
       MaxResults: 300,
-      ProductCode: productCode,
-      ...(process.env.BAILIAN_BILLING_PRODUCT_TYPE ? { ProductType: process.env.BAILIAN_BILLING_PRODUCT_TYPE } : {}),
-      ...(process.env.BAILIAN_BILLING_PIP_CODE ? { PipCode: process.env.BAILIAN_BILLING_PIP_CODE } : {}),
+      ...(!includeAllProducts ? {
+        ProductCode: productCode,
+        ...(process.env.BAILIAN_BILLING_PRODUCT_TYPE ? { ProductType: process.env.BAILIAN_BILLING_PRODUCT_TYPE } : {}),
+        ...(process.env.BAILIAN_BILLING_PIP_CODE ? { PipCode: process.env.BAILIAN_BILLING_PIP_CODE } : {}),
+      } : {}),
       ...(nextToken ? { NextToken: nextToken } : {}),
     }, { method: "POST", formatParams: false, timeout: 30_000 }) as Record<string, unknown>;
     const body = (response.Body || response) as Record<string, unknown>;
     if (body.Success === false || (body.Code && body.Code !== "Success")) {
-      throw new Error(`百炼账单查询失败（${String(body.Code || "unknown").slice(0, 80)}）`);
+      throw new Error(`阿里云账单查询失败（${String(body.Code || "unknown").slice(0, 80)}）`);
     }
     const data = body.Data as Record<string, unknown> | undefined;
     const items = data?.Items;
@@ -92,7 +96,7 @@ async function fetchBailianBill(billingCycle: string): Promise<InvoiceLine[]> {
     all.push(...pageItems.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object")));
     nextToken = typeof data?.NextToken === "string" ? data.NextToken : "";
     if (!nextToken) break;
-    if (page === 199) throw new Error("百炼账单分页超过 200 页，请缩小账单查询范围");
+    if (page === 199) throw new Error("阿里云账单分页超过 200 页，请缩小账单查询范围");
   }
   return parseBailianBillItems(billingCycle, all, productCode);
 }
@@ -103,6 +107,8 @@ export function parseBailianBillItems(billingCycle: string, all: Array<Record<st
     const amount = Number(item.AfterDiscountAmount ?? item.PretaxAmount);
     const currency = typeof item.Currency === "string" ? item.Currency : "CNY";
     if (!Number.isFinite(amount)) return [];
+    const productName = String(item.ProductName || item.ProductDetail || "");
+    const isBailian = /百炼|model\s*studio/i.test(productName);
     const source = {
       index,
       instanceId: item.InstanceID || "",
@@ -115,8 +121,11 @@ export function parseBailianBillItems(billingCycle: string, all: Array<Record<st
       currency,
     };
     return [{
+      storedProvider: isBailian ? "bailian" as const : "aliyun" as const,
       accountId: String(item.BillAccountID || item.OwnerID || accountId),
-      modelId: String(item.BillingItem || item.ProductDetail || item.ProductName || item.ProductCode || defaultProductCode),
+      modelId: isBailian
+        ? String(item.BillingItem || item.ProductDetail || item.ProductName || item.ProductCode || defaultProductCode)
+        : [item.ProductName, item.ProductDetail || item.BillingItem].filter(Boolean).join(" / ") || String(item.ProductCode || defaultProductCode),
       amount,
       currency,
       sourceId: stableId(billingCycle, source),
