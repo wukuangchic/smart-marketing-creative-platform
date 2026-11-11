@@ -40,6 +40,8 @@ docker compose ps
 docker compose logs --tail=100 web worker migrate
 ```
 
+成本统计中的阿里云云资源按账单的产品名、产品详情、计费项名称和编码分类：云盘、系统盘、数据盘、快照及其他存储产品归入“存储成本”；公网、带宽、网络和流量项目归入“流量成本”；其余云资源账单合计为“基础成本”。百炼模型调用费用单独统计，不并入服务器基础成本。
+
 ## 3. IP HTTPS 和 Nginx
 
 Let’s Encrypt 已支持短期 IP 地址证书，证书有效期约 160 小时；Certbot 需要 5.4 或更新版本才支持 IP 的 webroot 验证。证书续期必须自动运行并监控失败。先确保云安全组和宿主机防火墙仅开放 SSH、HTTP、HTTPS，并保留 SSH 通道。
