@@ -1,6 +1,6 @@
 export type GenerationMode = "text-to-image" | "image-to-image";
 export type TaskStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "unknown";
-export type RunStatus = "queued" | "running" | "succeeded" | "failed" | "unknown";
+export type RunStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "unknown";
 export type ProviderSlug = "bailian" | "gemini" | "zhipu";
 export type ProviderConfigSlug = ProviderSlug | "deepseek";
 
@@ -8,6 +8,7 @@ export interface GenerationRequest {
   mode: GenerationMode;
   prompt: string;
   inputAssetId?: string;
+  inputAssetIds?: string[];
   models: Array<{ modelKey: string; count: number }>;
   settings: {
     aspectRatio: string;

@@ -49,7 +49,7 @@ export default function HistoryPage() {
       nameTemplate: task.name_template || "{标识}",
       promptPrefix,
       tagIds: task.tags?.length ? task.tags.map((tag) => tag.id) : (task.tag_id ? [task.tag_id] : []),
-      models: task.runs.map((run) => ({ modelKey: run.modelKey, count: run.requestedCount || run.imageCount || 1 })),
+      models: [...new Map(task.runs.map((run) => [run.modelKey, { modelKey: run.modelKey, count: run.requestedCount || run.imageCount || 1 }])).values()],
       settings: {
         aspectRatio: task.settings?.aspectRatio || "1:1",
         targetWidth: Number(task.settings?.targetWidth) || 1024,
@@ -71,6 +71,10 @@ export default function HistoryPage() {
     <div className="history-toolbar"><label className="search-field"><Search size={16} /><input value={filter} onChange={(event) => { setFilter(event.target.value); setPage(1); }} placeholder="搜索提示词、成员、模型、标识或标签" /></label><span className="sort-label"><Clock3 size={14} /> 最近创建</span></div>
     {error && <div className="notice notice-error">{error}</div>}
     <div className="history-list">{tasks.map((task) => {
+      const runsByModel = new Map<string, Run[]>();
+      for (const run of task.runs) runsByModel.set(run.modelKey, [...(runsByModel.get(run.modelKey) || []), run]);
+      const knownCny = task.runs.reduce((sum, run) => sum + (run.estimatedCostCny == null ? 0 : Number(run.estimatedCostCny)), 0);
+      const cnyComplete = task.runs.length > 0 && task.runs.every((run) => run.estimatedCostCny != null);
       const previews: PreviewAsset[] = [
         ...(task.assets?.filter((asset) => asset.kind === "input").map((asset) => ({ id: asset.id, url: asset.url, originalName: asset.originalName, kind: "input" as const })) || []),
         ...task.runs.flatMap((run) => run.outputs || []).map((asset) => ({ id: asset.id, url: asset.url, originalName: asset.originalName, kind: "output" as const })),
@@ -79,10 +83,10 @@ export default function HistoryPage() {
         <div className="history-main">
           <div className="history-meta"><span className={task.mode === "image-to-image" ? "history-type edit" : "history-type"}>{task.mode === "image-to-image" ? "图生图" : "文生图"}</span><span>{task.creator_name}</span><span>·</span><span>{new Date(task.created_at).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span><span className={`task-pill ${task.status}`}>{task.status === "succeeded" ? "已完成" : task.status === "partial" ? "部分完成" : task.status === "failed" ? "失败" : task.status === "unknown" ? "状态待核实" : "进行中"}</span><button type="button" className="history-task-copy" onClick={() => copyTaskToStudio(task)}><Copy size={13} /> 一键复制</button>{task.runs.some((run) => run.outputs?.length) && <a className="history-task-download" href={`/api/generations/${task.id}/download`}><Download size={13} /> 下载任务压缩包</a>}</div>
           <p className="history-prompt">{task.prompt}</p>
-          <div className="history-tags">{task.runs.map((run) => <span key={run.id}>{run.modelId}</span>)}<span>{task.settings?.aspectRatio || "1:1"} · {task.settings?.imageSize || "1K"}</span>{task.identifier && <span className="history-identifier">{task.identifier.length === 4 ? "提示词前缀" : "标识"} {task.identifier}</span>}{task.tags?.length ? task.tags.map((tag) => <span className="history-category-tag" key={tag.id}>{tag.name}</span>) : task.tag_name && <span className="history-category-tag">{task.tag_name}</span>}{task.name_template && task.identifier && task.name_template !== "{标识}" && <span>{task.name_template.replace("{标识}", task.identifier)}</span>}</div>
+          <div className="history-tags">{[...new Map(task.runs.map((run) => [run.modelKey, run])).values()].map((run) => <span key={run.modelKey}>{run.modelId}</span>)}<span>{task.settings?.aspectRatio || "1:1"} · {task.settings?.imageSize || "1K"}</span>{task.identifier && <span className="history-identifier">{task.identifier.length === 4 ? "提示词前缀" : "标识"} {task.identifier}</span>}{task.tags?.length ? task.tags.map((tag) => <span className="history-category-tag" key={tag.id}>{tag.name}</span>) : task.tag_name && <span className="history-category-tag">{task.tag_name}</span>}{task.name_template && task.identifier && task.name_template !== "{标识}" && <span>{task.name_template.replace("{标识}", task.identifier)}</span>}</div>
         </div>
         <div className="history-images">{previews.map((asset) => <a className="history-image-preview" key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><img src={`/api/assets/${asset.id}/thumbnail`} alt={asset.kind === "input" ? "图生图原图" : asset.originalName} loading="lazy" /><span><ArrowUpRight size={13} /></span></a>)}</div>
-        <div className="history-costs">{task.runs.map((run) => <div key={run.id}><small>{run.modelId.replace("-image", "")}</small><b>{run.estimatedCost ? `${Number(run.estimatedCost).toFixed(4)} ${run.currency}` : "待配置"}</b></div>)}</div>
+          <div className="history-costs">{[...runsByModel].map(([modelKey, runs]) => { const currency = runs.find((run) => run.currency)?.currency || ""; const priced = runs.filter((run) => run.estimatedCost != null); const amount = priced.reduce((sum, run) => sum + Number(run.estimatedCost), 0); const partial = priced.length !== runs.length; return <div key={modelKey}><small>{runs[0].modelId.replace("-image", "")}</small><b>{priced.length ? `${amount.toFixed(4)} ${currency}${partial ? "（部分）" : ""}` : "待配置"}</b></div>; })}<div className="task-cost-total"><small>任务合计（CNY）</small><b>{cnyComplete ? `¥${knownCny.toFixed(4)}` : knownCny ? `已计 ¥${knownCny.toFixed(4)}（未完整）` : "待配置"}</b></div></div>
       </article>;
     })}
       {loading && !tasks.length && <div className="materials-loading">正在加载历史记录</div>}

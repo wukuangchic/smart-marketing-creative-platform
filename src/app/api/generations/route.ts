@@ -5,7 +5,7 @@ import { currentUser, requireUser } from "@/server/auth";
 import { query, pool } from "@/server/db";
 import { HttpError } from "@/server/errors";
 import { MODELS, SHARED_ASPECT_RATIOS } from "@/server/models";
-import { storeUpload, storageStatus } from "@/server/media";
+import { copyStoredMedia, MAX_INPUT_IMAGES, storeUpload, storageStatus } from "@/server/media";
 import { getBoss } from "@/server/queue";
 import { jsonError, sameOrigin } from "@/server/http";
 import { createPromptPrefix, isPromptPrefix, MAX_BASE32_SEQUENCE, normalizePromptPrefix } from "@/server/identifiers";
@@ -15,10 +15,10 @@ const schema = z.object({
   prompt: z.string().trim().min(1).max(18000),
   nameTemplate: z.string().trim().min(1).max(120).refine((value) => {
     const tokens = value.match(/\{[^{}]*\}/g) || [];
-    const allowed = new Set(["{标识}", "{日期}", "{模型}", "{员工姓名}"]);
-    const withoutKnownTokens = value.replace(/\{标识\}|\{日期\}|\{模型\}|\{员工姓名\}/g, "");
+    const allowed = new Set(["{标识}", "{日期}", "{模型}", "{员工姓名}", "{原名}"]);
+    const withoutKnownTokens = value.replace(/\{标识\}|\{日期\}|\{模型\}|\{员工姓名\}|\{原名\}/g, "");
     return tokens.filter((token) => token === "{标识}").length === 1 && tokens.every((token) => allowed.has(token)) && !/[{}]/.test(withoutKnownTokens);
-  }, "图片命名必须且只能包含一次 {标识}，其他通配符仅支持 {日期}、{模型} 和 {员工姓名}"),
+  }, "图片命名必须且只能包含一次 {标识}，其他通配符仅支持 {日期}、{模型}、{员工姓名} 和 {原名}"),
   promptPrefix: z.string().optional().nullable(),
   tagIds: z.array(z.string().uuid()).optional(),
   tagId: z.string().uuid().nullable().optional(),
@@ -32,18 +32,20 @@ const schema = z.object({
 });
 
 export async function POST(request: Request) {
-  let uploaded: Awaited<ReturnType<typeof storeUpload>> | undefined;
+  const uploaded: Awaited<ReturnType<typeof storeUpload>>[] = [];
+  const createdMedia: Array<{ relativePath: string }> = [];
   let taskCommitted = false;
   try {
     if (!sameOrigin(request)) return NextResponse.json({ error: "请求来源不匹配" }, { status: 403 });
     const user = await requireUser();
     const contentLength = Number(request.headers.get("content-length") || 0);
-    if (contentLength > 12 * 1024 * 1024) return NextResponse.json({ error: "请求大小超过 12 MiB" }, { status: 413 });
+    if (contentLength > 110 * 1024 * 1024) return NextResponse.json({ error: "请求大小超过 110 MiB" }, { status: 413 });
     const usage = await storageStatus();
     if (usage.blocked) return NextResponse.json({ error: "图片存储空间已达到暂停阈值，请联系管理员扩容后再生成" }, { status: 507 });
     const form = await request.formData();
     const parsed = schema.safeParse({ mode: form.get("mode"), prompt: form.get("prompt"), nameTemplate: form.get("nameTemplate"), promptPrefix: String(form.get("promptPrefix") || "") || null, tagIds: JSON.parse(String(form.get("tagIds") || "[]")), tagId: String(form.get("tagId") || "") || null, models: JSON.parse(String(form.get("models") || "[]")), settings: JSON.parse(String(form.get("settings") || "{}")), confirmed: form.get("confirmed") });
     if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "生成参数无效" }, { status: 400 });
+    if (parsed.data.mode === "text-to-image" && parsed.data.nameTemplate.includes("{原名}")) return NextResponse.json({ error: "{原名} 仅适用于图生图命名" }, { status: 400 });
     const tagIds = [...new Set([...(parsed.data.tagIds || []), ...(parsed.data.tagId ? [parsed.data.tagId] : [])])];
     if (parsed.data.promptPrefix && !isPromptPrefix(parsed.data.promptPrefix)) return NextResponse.json({ error: "提示词标识前缀无效，请重新选择历史提示词" }, { status: 400 });
     if (parsed.data.promptPrefix) {
@@ -56,9 +58,20 @@ export async function POST(request: Request) {
       const tags = await query("SELECT id FROM creative_tags WHERE id=ANY($1::uuid[])", [tagIds]);
       if (tags.rowCount !== tagIds.length) return NextResponse.json({ error: "所选分类标签不存在，请刷新后重新选择" }, { status: 400 });
     }
-    const inputFile = form.get("image");
-    if (parsed.data.mode === "image-to-image" && !(inputFile instanceof File)) return NextResponse.json({ error: "图生图需要上传一张原图" }, { status: 400 });
-    if (parsed.data.mode === "text-to-image" && inputFile instanceof File && inputFile.size) return NextResponse.json({ error: "文生图不接受参考图" }, { status: 400 });
+    let assetIds: string[];
+    try {
+      const value = JSON.parse(String(form.get("inputAssetIds") || "[]"));
+      if (!Array.isArray(value)) throw new Error("invalid");
+      assetIds = z.array(z.string().uuid()).max(MAX_INPUT_IMAGES).parse(value);
+    } catch { return NextResponse.json({ error: "素材库原图列表无效" }, { status: 400 }); }
+    if (new Set(assetIds).size !== assetIds.length) return NextResponse.json({ error: "同一原图不能重复添加" }, { status: 400 });
+    const inputFiles = form.getAll("images").filter((value): value is File => value instanceof File && value.size > 0);
+    const legacyFile = form.get("image");
+    if (legacyFile instanceof File && legacyFile.size > 0) inputFiles.push(legacyFile);
+    const inputCount = inputFiles.length + assetIds.length;
+    if (inputCount > MAX_INPUT_IMAGES) return NextResponse.json({ error: `一次最多添加 ${MAX_INPUT_IMAGES} 张原图` }, { status: 400 });
+    if (parsed.data.mode === "image-to-image" && inputCount < 1) return NextResponse.json({ error: "图生图请至少添加一张原图" }, { status: 400 });
+    if (parsed.data.mode === "text-to-image" && inputCount > 0) return NextResponse.json({ error: "文生图不接受参考图" }, { status: 400 });
     const unique = new Set(parsed.data.models.map((item) => item.modelKey));
     if (unique.size !== parsed.data.models.length) return NextResponse.json({ error: "同一模型不能重复选择" }, { status: 400 });
     for (const requested of parsed.data.models) {
@@ -72,21 +85,40 @@ export async function POST(request: Request) {
     }
     const imageSize = Math.max(parsed.data.settings.targetWidth, parsed.data.settings.targetHeight) > 1536 ? "2K" : "1K";
     const taskSettings = { ...parsed.data.settings, imageSize };
-    if (parsed.data.mode === "image-to-image") uploaded = await storeUpload(inputFile as File, user.id);
+    const referencedUploads: Awaited<ReturnType<typeof copyStoredMedia>>[] = [];
+    if (assetIds.length) {
+      const sourceRows = await query<{ id: string; relative_path: string; media_type: string; size_bytes: string; sha256: string; original_name: string }>(
+        "SELECT id,relative_path,media_type,size_bytes,sha256,original_name FROM media_assets WHERE id=ANY($1::uuid[]) AND kind='output'", [assetIds],
+      );
+      const sourceById = new Map(sourceRows.rows.map((row) => [row.id, row]));
+      if (sourceById.size !== assetIds.length) return NextResponse.json({ error: "部分素材不存在或不可用于图生图，请刷新素材库" }, { status: 400 });
+      for (const id of assetIds) {
+        const source = sourceById.get(id)!;
+        const copy = await copyStoredMedia({ relativePath: source.relative_path, mediaType: source.media_type, size: Number(source.size_bytes), sha256: source.sha256, originalName: source.original_name }, user.id);
+        referencedUploads.push(copy);
+        createdMedia.push(copy);
+      }
+    }
+    for (const file of inputFiles) {
+      const upload = await storeUpload(file, user.id);
+      uploaded.push(upload);
+      createdMedia.push(upload);
+    }
+    const inputs = [...uploaded, ...referencedUploads];
     const taskId = randomUUID();
-    const assetId = uploaded?.id || null;
+    const assetId = inputs[0]?.id || null;
     const dbClient = await pool.connect();
     const runIds: string[] = [];
     const identifier = parsed.data.promptPrefix || createPromptPrefix();
     let sequenceStart = 1;
     try {
       await dbClient.query("BEGIN");
-      if (uploaded) await dbClient.query(
+      for (const input of inputs) await dbClient.query(
         `INSERT INTO media_assets(id,owner_id,kind,relative_path,media_type,size_bytes,sha256,original_name)
          VALUES ($1,$2,'input',$3,$4,$5,$6,$7)`,
-        [uploaded.id, uploaded.ownerId, uploaded.relativePath, uploaded.mediaType, uploaded.size, uploaded.sha256, uploaded.originalName],
+        [input.id, input.ownerId, input.relativePath, input.mediaType, input.size, input.sha256, input.originalName],
       );
-      const totalRequested = parsed.data.models.reduce((sum, item) => sum + item.count, 0);
+      const totalRequested = parsed.data.models.reduce((sum, item) => sum + item.count, 0) * Math.max(1, inputs.length);
       await dbClient.query(
         `INSERT INTO prompt_sequences(prompt_prefix,next_sequence) VALUES ($1,1) ON CONFLICT (prompt_prefix) DO NOTHING`, [identifier],
       );
@@ -103,6 +135,10 @@ export async function POST(request: Request) {
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'queued')`,
         [taskId, user.id, parsed.data.mode, parsed.data.prompt, parsed.data.nameTemplate, identifier, tagIds[0] || null, assetId, JSON.stringify(taskSettings)],
       );
+      for (const [position, input] of inputs.entries()) {
+        await dbClient.query("UPDATE media_assets SET task_id=$2 WHERE id=$1", [input.id, taskId]);
+        await dbClient.query("INSERT INTO generation_task_inputs(task_id,asset_id,position) VALUES ($1,$2,$3)", [taskId, input.id, position]);
+      }
       if (tagIds.length) await dbClient.query(
         `INSERT INTO generation_task_tags(task_id,tag_id)
          SELECT $1,selected.tag_id FROM unnest($2::uuid[]) AS selected(tag_id)`,
@@ -110,13 +146,16 @@ export async function POST(request: Request) {
       );
       for (const requested of parsed.data.models) {
         const model = MODELS.find((item) => item.key === requested.modelKey)!;
-        const runId = randomUUID();
-        runIds.push(runId);
-        await dbClient.query(
-          `INSERT INTO provider_runs(id,task_id,provider,model_key,model_id,requested_count,sequence_start,status) VALUES ($1,$2,$3,$4,$5,$6,$7,'queued')`,
-          [runId, taskId, model.provider, model.key, model.modelId, requested.count, sequenceStart],
-        );
-        sequenceStart += requested.count;
+        const sources: Array<{ id: string | null }> = inputs.length ? inputs.map((input) => ({ id: input.id })) : [{ id: null }];
+        for (const source of sources) {
+          const runId = randomUUID();
+          runIds.push(runId);
+          await dbClient.query(
+            `INSERT INTO provider_runs(id,task_id,provider,model_key,model_id,input_asset_id,requested_count,sequence_start,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'queued')`,
+            [runId, taskId, model.provider, model.key, model.modelId, source.id, requested.count, sequenceStart],
+          );
+          sequenceStart += requested.count;
+        }
       }
       await dbClient.query("COMMIT");
       taskCommitted = true;
@@ -142,8 +181,8 @@ export async function POST(request: Request) {
     }
     return NextResponse.json({ taskId, identifier, displayName: identifier, status: queuedCount ? "queued" : "failed", warning: queueWarning ? "部分模型未能进入后台队列，失败状态已记录" : undefined }, { status: 202 });
   } catch (error) {
-    if (uploaded && !taskCommitted) {
-      try { const { removeMedia } = await import("@/server/media"); await removeMedia(uploaded.relativePath); } catch { /* orphan is reported by storage scan */ }
+    if (!taskCommitted && createdMedia.length) {
+      try { const { removeMedia } = await import("@/server/media"); await Promise.all(createdMedia.map((item) => removeMedia(item.relativePath))); } catch { /* orphan is reported by storage scan */ }
     }
     return jsonError(error);
   }
@@ -183,7 +222,7 @@ export async function GET(request: Request) {
               u.display_name AS creator_name,
               COALESCE((SELECT json_agg(json_build_object('id',a.id,'kind',a.kind,'url','/api/assets/'||a.id,'width',a.width,'height',a.height,'mediaType',a.media_type,'originalName',a.original_name,'identifier',a.identifier) ORDER BY a.created_at)
                         FROM media_assets a WHERE a.task_id=t.id),'[]'::json) AS assets,
-              COALESCE((SELECT json_agg(json_build_object('id',r.id,'provider',r.provider,'modelKey',r.model_key,'modelId',r.model_id,'status',r.status,'requestedCount',r.requested_count,'imageCount',r.image_count,'usage',r.usage,'estimatedCost',r.estimated_cost,'currency',r.currency,'estimatedCostCny',r.estimated_cost_cny,'errorMessage',r.error_message,'startedAt',r.started_at,'finishedAt',r.finished_at,'outputs',COALESCE((SELECT json_agg(json_build_object('id',a.id,'url','/api/assets/'||a.id,'width',a.width,'height',a.height,'originalName',a.original_name,'identifier',a.identifier) ORDER BY a.created_at) FROM media_assets a WHERE a.run_id=r.id),'[]'::json)) ORDER BY r.created_at)
+              COALESCE((SELECT json_agg(json_build_object('id',r.id,'provider',r.provider,'modelKey',r.model_key,'modelId',r.model_id,'inputAssetId',r.input_asset_id,'status',r.status,'requestedCount',r.requested_count,'imageCount',r.image_count,'usage',r.usage,'estimatedCost',r.estimated_cost,'currency',r.currency,'estimatedCostCny',r.estimated_cost_cny,'errorMessage',r.error_message,'startedAt',r.started_at,'finishedAt',r.finished_at,'outputs',COALESCE((SELECT json_agg(json_build_object('id',a.id,'url','/api/assets/'||a.id,'width',a.width,'height',a.height,'originalName',a.original_name,'identifier',a.identifier) ORDER BY a.created_at) FROM media_assets a WHERE a.run_id=r.id),'[]'::json)) ORDER BY r.created_at)
                         FROM provider_runs r WHERE r.task_id=t.id),'[]'::json) AS runs
        FROM generation_tasks t JOIN users u ON u.id=t.creator_id LEFT JOIN creative_tags ct ON ct.id=t.tag_id
        ${where}

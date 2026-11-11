@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, stat, statfs, writeFile, readFile, unlink } from "node:fs/promises";
+import { link, mkdir, stat, statfs, writeFile, readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { HttpError } from "./errors";
@@ -7,6 +7,7 @@ import { HttpError } from "./errors";
 const root = path.resolve(/*turbopackIgnore: true*/ process.env.MEDIA_ROOT || "./data/media");
 const accepted = new Set(["image/png", "image/jpeg", "image/webp"]);
 export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+export const MAX_INPUT_IMAGES = 10;
 
 export async function storeUpload(file: File, ownerId: string) {
   if (!accepted.has(file.type)) throw new HttpError(400, "仅支持 PNG、JPG、JPEG 和 WebP 图片");
@@ -21,6 +22,17 @@ export async function storeUpload(file: File, ownerId: string) {
   await writeFile(target, bytes, { flag: "wx", mode: 0o640 });
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   return { id, ownerId, relativePath, mediaType: file.type, size: bytes.length, sha256, originalName: file.name.slice(0, 180) };
+}
+
+export async function copyStoredMedia(source: { relativePath: string; mediaType: string; size: number; sha256: string; originalName: string }, ownerId: string) {
+  if (!accepted.has(source.mediaType)) throw new HttpError(400, "素材格式不受支持");
+  const ext = source.mediaType === "image/png" ? ".png" : source.mediaType === "image/webp" ? ".webp" : ".jpg";
+  const id = randomUUID();
+  const relativePath = path.join(new Date().toISOString().slice(0, 7), `${id}${ext}`);
+  const target = safePath(relativePath);
+  await mkdir(path.dirname(target), { recursive: true });
+  await link(safePath(source.relativePath), target);
+  return { id, ownerId, relativePath, mediaType: source.mediaType, size: source.size, sha256: source.sha256, originalName: source.originalName.slice(0, 180) };
 }
 
 function matchesMediaType(bytes: Buffer, mediaType: string) {

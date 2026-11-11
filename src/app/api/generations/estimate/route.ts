@@ -5,10 +5,12 @@ import { query } from "@/server/db";
 import { MODELS, SHARED_ASPECT_RATIOS, nativeImageSize } from "@/server/models";
 import { estimateCost } from "@/server/providers";
 import { jsonError, sameOrigin } from "@/server/http";
+import { MAX_INPUT_IMAGES } from "@/server/media";
 
 const schema = z.object({
   mode: z.enum(["text-to-image", "image-to-image"]),
   prompt: z.string().trim().min(1).max(18000),
+  inputCount: z.coerce.number().int().min(0).max(MAX_INPUT_IMAGES).default(0),
   models: z.array(z.object({ modelKey: z.string(), count: z.coerce.number().int().min(1).max(20) })).min(1).max(MODELS.length),
   settings: z.object({
     aspectRatio: z.enum(SHARED_ASPECT_RATIOS),
@@ -26,6 +28,9 @@ export async function POST(request: Request) {
     if (new Set(parsed.data.models.map((item) => item.modelKey)).size !== parsed.data.models.length) {
       return NextResponse.json({ error: "同一模型不能重复选择" }, { status: 400 });
     }
+    if (parsed.data.mode === "image-to-image" && parsed.data.inputCount < 1) return NextResponse.json({ error: "图生图请先添加至少一张原图" }, { status: 400 });
+    if (parsed.data.mode === "text-to-image" && parsed.data.inputCount !== 0) return NextResponse.json({ error: "文生图不接受原图" }, { status: 400 });
+    const inputCount = parsed.data.mode === "image-to-image" ? parsed.data.inputCount : 1;
     const [configured, rates] = await Promise.all([
       query<{ model_key: string; enabled: boolean; pricing: Record<string, unknown> | null }>(
         `SELECT m.model_key,
@@ -47,6 +52,8 @@ export async function POST(request: Request) {
       modelName: string;
       provider: string;
       count: number;
+      countPerInput: number;
+      inputCount: number;
       nativeImageSize: "1K" | "2K";
       estimatedCost: string;
       currency: string;
@@ -61,7 +68,7 @@ export async function POST(request: Request) {
       if (parsed.data.mode === "image-to-image" && !model.supportsImageToImage) return NextResponse.json({ error: `${model.name} 不支持图生图` }, { status: 400 });
       if ("maxPromptChars" in model && model.maxPromptChars && parsed.data.prompt.length > model.maxPromptChars) return NextResponse.json({ error: `${model.name} 的提示词最多支持 ${model.maxPromptChars} 个字符` }, { status: 400 });
       const imageSize = nativeImageSize(model, parsed.data.settings.targetWidth, parsed.data.settings.targetHeight);
-      const price = estimateCost(config.pricing && Object.keys(config.pricing).length ? config.pricing : model.defaultPricing, imageSize, requested.count);
+      const price = estimateCost(config.pricing && Object.keys(config.pricing).length ? config.pricing : model.defaultPricing, imageSize, requested.count * inputCount);
       if (!price) return NextResponse.json({ error: `${model.name} 缺少 ${imageSize} 参考价格，请联系管理员补充` }, { status: 409 });
       const rate = price.currency === "CNY" ? 1 : fx.get(price.currency);
       const amountCny = rate ? (Number(price.amount) * rate).toFixed(8) : null;
@@ -69,11 +76,13 @@ export async function POST(request: Request) {
         modelKey: model.key,
         modelName: model.name,
         provider: model.provider,
-        count: requested.count,
+        count: requested.count * inputCount,
+        countPerInput: requested.count,
+        inputCount,
         nativeImageSize: imageSize,
         estimatedCost: price.amount,
         currency: price.currency,
-        estimatedCostCny: amountCny,
+      estimatedCostCny: amountCny,
       });
     }
     const totalsByCurrency = Object.fromEntries([...new Set(lines.map((line) => line.currency))].map((currency) => [

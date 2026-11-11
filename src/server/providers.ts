@@ -50,7 +50,7 @@ export async function runProviderRun(runId: string) {
     input_asset_id: string | null; creator_id: string; creator_name: string; created_at: Date | string;
   }>(
     `SELECT r.id AS run_id,r.task_id,r.provider,r.model_key,r.model_id,r.requested_count,r.sequence_start,
-            t.mode,t.prompt,t.name_template,t.identifier,t.settings,t.input_asset_id,t.creator_id,t.created_at,u.display_name AS creator_name
+            t.mode,t.prompt,t.name_template,t.identifier,t.settings,COALESCE(r.input_asset_id,t.input_asset_id) AS input_asset_id,t.creator_id,t.created_at,u.display_name AS creator_name
      FROM provider_runs r JOIN generation_tasks t ON t.id=r.task_id JOIN users u ON u.id=t.creator_id WHERE r.id=$1`, [runId],
   );
   const run = runResult.rows[0];
@@ -74,9 +74,11 @@ export async function runProviderRun(runId: string) {
     apiKeyForRedaction = apiKey;
     const adapter = createAdapter(run.provider, run.model_id, apiKey, config.endpoint || "", config.config || {});
     let providerResult: ProviderResult;
+    let sourceName = "";
     if (run.mode === "image-to-image" && run.input_asset_id) {
-      const input = await query<{ relative_path: string; media_type: string }>("SELECT relative_path,media_type FROM media_assets WHERE id=$1", [run.input_asset_id]);
+      const input = await query<{ relative_path: string; media_type: string; original_name: string }>("SELECT relative_path,media_type,original_name FROM media_assets WHERE id=$1", [run.input_asset_id]);
       if (!input.rows[0]) throw new Error("找不到图生图原图");
+      sourceName = input.rows[0].original_name.replace(/\.[^.]+$/, "");
       const image = await readMedia(input.rows[0].relative_path);
       providerResult = await adapter.editImage({
         prompt: run.prompt, count: run.requested_count, aspectRatio: run.settings.aspectRatio || "1:1",
@@ -105,7 +107,8 @@ export async function runProviderRun(runId: string) {
           .replaceAll("{标识}", outputIdentifier)
           .replaceAll("{日期}", taskDateForFilename(run.created_at))
           .replaceAll("{模型}", run.model_id)
-          .replaceAll("{员工姓名}", run.creator_name);
+          .replaceAll("{员工姓名}", run.creator_name)
+          .replaceAll("{原名}", sourceName);
       } else {
         const sequence = String(run.sequence_start + index).padStart(3, "0");
         const template = run.name_template || "创意-{标识}-{序号}";
@@ -114,7 +117,8 @@ export async function runProviderRun(runId: string) {
           .replaceAll("{序号}", sequence)
           .replaceAll("{日期}", taskDateForFilename(run.created_at))
           .replaceAll("{模型}", run.model_id)
-          .replaceAll("{员工姓名}", run.creator_name);
+          .replaceAll("{员工姓名}", run.creator_name)
+          .replaceAll("{原名}", sourceName);
         if (!template.includes("{序号}")) outputName = `${outputName}-${sequence}`;
       }
       const asset = await storeGenerated(output.bytes, output.mediaType, run.creator_id, outputName);
@@ -136,16 +140,18 @@ export async function runProviderRun(runId: string) {
       } finally { client.release(); }
     }
     const pricingResult = await query<{ pricing: Record<string, unknown> }>("SELECT pricing FROM provider_models WHERE model_key=$1", [run.model_key]);
-    const price = estimateCost(pricingResult.rows[0]?.pricing || {}, providerImageSize, providerResult.outputs.length);
+    const price = providerResult.outputs.length ? estimateCost(pricingResult.rows[0]?.pricing || {}, providerImageSize, providerResult.outputs.length) : null;
     const fx = price ? await query<{ rate_to_cny: string }>(
       "SELECT rate_to_cny FROM exchange_rates WHERE currency=$1 AND effective_date<=COALESCE((SELECT started_at::date FROM provider_runs WHERE id=$2),(SELECT created_at::date FROM provider_runs WHERE id=$2),current_date) ORDER BY effective_date DESC LIMIT 1", [price.currency, runId],
     ) : null;
     const cny = price && (price.currency === "CNY" || fx?.rows[0])
       ? (Number(price.amount) * Number(price.currency === "CNY" ? 1 : fx!.rows[0].rate_to_cny)).toFixed(8) : null;
+    const runStatus = providerResult.outputs.length < run.requested_count ? "partial" : "succeeded";
+    const partialMessage = runStatus === "partial" ? `模型请求 ${run.requested_count} 张，实际返回 ${providerResult.outputs.length} 张` : null;
     await query(
-      `UPDATE provider_runs SET status='succeeded',image_count=$2,request_id=$3,usage=$4,estimated_cost=$5,currency=$6,estimated_cost_cny=$7,finished_at=now()
+      `UPDATE provider_runs SET status=$8,image_count=$2,request_id=$3,usage=$4,estimated_cost=$5,currency=$6,estimated_cost_cny=$7,error_message=$9,finished_at=now()
        WHERE id=$1`,
-      [runId, providerResult.outputs.length, providerResult.requestId || null, JSON.stringify(providerResult.usage), price?.amount || null, price?.currency || null, cny],
+      [runId, providerResult.outputs.length, providerResult.requestId || null, JSON.stringify(providerResult.usage), price?.amount || null, price?.currency || null, cny, runStatus, partialMessage],
     );
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : "图片生成失败";
@@ -164,10 +170,10 @@ async function finishRun(runId: string, status: "failed" | "unknown", options: {
 async function refreshTaskStatus(taskId: string) {
   const result = await query<{ status: string; count: string }>("SELECT status,count(*) OVER() AS count FROM provider_runs WHERE task_id=$1", [taskId]);
   const statuses = result.rows.map((row) => row.status);
-  const done = statuses.every((status) => ["succeeded", "failed", "unknown"].includes(status));
+  const done = statuses.every((status) => ["succeeded", "partial", "failed", "unknown"].includes(status));
   if (!done) return;
   const successCount = statuses.filter((status) => status === "succeeded").length;
-  const taskStatus = successCount === statuses.length ? "succeeded" : successCount > 0 ? "partial" : statuses.includes("unknown") ? "unknown" : "failed";
+  const taskStatus = successCount === statuses.length ? "succeeded" : successCount > 0 || statuses.includes("partial") ? "partial" : statuses.includes("unknown") ? "unknown" : "failed";
   await query("UPDATE generation_tasks SET status=$2,finished_at=now() WHERE id=$1", [taskId, taskStatus]);
 }
 

@@ -18,7 +18,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     const source = await readMedia(asset.rows[0].relative_path);
     const thumbnail = await sharp(source)
       .rotate()
-      .resize(100, 100, {
+      .resize(300, 300, {
         fit: "contain",
         background: { r: 255, g: 255, b: 255, alpha: 1 },
       })

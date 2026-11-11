@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS provider_runs (
   provider text NOT NULL CHECK (provider IN ('bailian','gemini','zhipu')),
   model_key text NOT NULL REFERENCES provider_models(model_key),
   model_id text NOT NULL,
-  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','failed','unknown')),
+  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','partial','failed','unknown')),
   requested_count integer NOT NULL CHECK (requested_count > 0),
   sequence_start integer NOT NULL DEFAULT 1 CHECK (sequence_start > 0),
   image_count integer NOT NULL DEFAULT 0,
@@ -129,6 +129,18 @@ CREATE TABLE IF NOT EXISTS media_assets (
 );
 ALTER TABLE generation_tasks DROP CONSTRAINT IF EXISTS generation_tasks_input_asset_id_fkey;
 ALTER TABLE generation_tasks ADD CONSTRAINT generation_tasks_input_asset_id_fkey FOREIGN KEY (input_asset_id) REFERENCES media_assets(id) ON DELETE SET NULL;
+ALTER TABLE provider_runs ADD COLUMN IF NOT EXISTS input_asset_id uuid REFERENCES media_assets(id) ON DELETE SET NULL;
+CREATE TABLE IF NOT EXISTS generation_task_inputs (
+  task_id uuid NOT NULL REFERENCES generation_tasks(id) ON DELETE CASCADE,
+  asset_id uuid NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  position integer NOT NULL CHECK (position >= 0),
+  PRIMARY KEY(task_id,asset_id),
+  UNIQUE(task_id,position)
+);
+INSERT INTO generation_task_inputs(task_id,asset_id,position)
+  SELECT id,input_asset_id,0 FROM generation_tasks WHERE input_asset_id IS NOT NULL ON CONFLICT DO NOTHING;
+ALTER TABLE provider_runs DROP CONSTRAINT IF EXISTS provider_runs_status_check;
+ALTER TABLE provider_runs ADD CONSTRAINT provider_runs_status_check CHECK (status IN ('queued','running','succeeded','partial','failed','unknown'));
 CREATE INDEX IF NOT EXISTS media_assets_task_idx ON media_assets(task_id);
 CREATE TABLE IF NOT EXISTS invoices (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
