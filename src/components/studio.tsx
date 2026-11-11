@@ -51,6 +51,7 @@ function providerLogo(provider: string) {
   if (provider === "bailian") return { className: "bailian-logo", text: "通" };
   if (provider === "gemini") return { className: "gemini-logo", text: "✦" };
   if (provider === "deepseek") return { className: "deepseek-logo", text: "D" };
+  if (provider === "volcengine") return { className: "volcengine-logo", text: "豆" };
   return { className: "zhipu-logo", text: "智" };
 }
 
@@ -406,7 +407,7 @@ export function Studio() {
           const priceCny = catalog[model.key]?.priceCnyPerImage?.[size];
           const priceLabel = unitPrice == null ? "价格未配置" : `参考 ${formatAmount(unitPrice)} ${pricing.currency || ""}/张${priceCny != null && pricing.currency !== "CNY" ? ` · ¥${formatAmount(priceCny)}` : ""}`;
           return <div key={model.key} className={checked ? "model-option selected" : "model-option"} onClick={() => toggleModel(model.key)}>
-            <span className={checked ? "model-check checked" : "model-check"}>{checked && <Check size={12} />}</span><span className={`provider-logo ${logo.className}`}>{logo.text}</span><span className="model-copy"><b>{model.name}</b><small>{model.provider === "bailian" ? "阿里云百炼" : model.provider === "gemini" ? "Google Gemini" : "智谱 AI"} · {model.supportsTextToImage ? "文生图" : ""}{model.supportsTextToImage && model.supportsImageToImage ? " / " : ""}{model.supportsImageToImage ? "图生图" : "仅文生图"} · {priceLabel}</small></span><span className="model-ready"><i /> 可用</span>
+            <span className={checked ? "model-check checked" : "model-check"}>{checked && <Check size={12} />}</span><span className={`provider-logo ${logo.className}`}>{logo.text}</span><span className="model-copy"><b>{model.name}</b><small>{model.provider === "bailian" ? "阿里云百炼" : model.provider === "gemini" ? "Google Gemini" : model.provider === "volcengine" ? "火山方舟" : "智谱 AI"} · {model.supportsTextToImage ? "文生图" : ""}{model.supportsTextToImage && model.supportsImageToImage ? " / " : ""}{model.supportsImageToImage ? "图生图" : "仅文生图"} · {priceLabel}</small></span><span className="model-ready"><i /> 可用</span>
             {checked && <div className="model-count" onClick={(event) => event.stopPropagation()}><button onClick={() => setCounts((state) => ({ ...state, [model.key]: Math.max(1, (state[model.key] || 1) - 1) }))}>−</button><span>{counts[model.key] || 1} 张</span><button disabled={(counts[model.key] || 1) >= model.maxImages} onClick={() => setCounts((state) => ({ ...state, [model.key]: Math.min(model.maxImages, (state[model.key] || 1) + 1) }))}>+</button></div>}
           </div>;
         })}{availableModels.length === 0 && <div className="model-empty">当前模式没有已启用的模型，请联系管理员配置 API 与模型。</div>}</div>

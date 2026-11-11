@@ -7,7 +7,7 @@ import { MODELS, PROVIDERS } from "@/server/models";
 import { jsonError, sameOrigin } from "@/server/http";
 
 const priceField = z.string().max(32).refine((value) => value === "" || (/^\d+(\.\d{1,8})?$/.test(value) && Number.isFinite(Number(value)) && Number(value) >= 0), "价格必须为非负数字，最多 8 位小数");
-const providerEnum = z.enum(["bailian", "gemini", "zhipu", "deepseek"]);
+const providerEnum = z.enum(["bailian", "gemini", "zhipu", "deepseek", "volcengine"]);
 const bodySchema = z.object({
   provider: providerEnum,
   enabled: z.boolean(),
@@ -39,6 +39,7 @@ export async function GET() {
         const row = rows.find((item) => item.model_key === model.key);
         return {
           model_key: model.key, model_id: row?.model_id || model.modelId, display_name: row?.display_name || model.name,
+          availability_note: "availabilityNote" in model ? model.availabilityNote : undefined,
           enabled: row?.model_enabled ?? false, max_images: row?.max_images || model.maxImages,
           supports_text_to_image: model.supportsTextToImage, supports_image_to_image: model.supportsImageToImage,
           pricing: row?.pricing && Object.keys(row.pricing).length ? row.pricing : model.defaultPricing,

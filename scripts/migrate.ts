@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_user_id_idx ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS provider_configs (
-  provider text PRIMARY KEY CHECK (provider IN ('bailian','gemini','zhipu','deepseek')),
+  provider text PRIMARY KEY CHECK (provider IN ('bailian','gemini','zhipu','deepseek','volcengine')),
   enabled boolean NOT NULL DEFAULT false,
   endpoint text,
   api_key_ciphertext text,
@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS prompt_sequences (
 CREATE TABLE IF NOT EXISTS provider_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   task_id uuid NOT NULL REFERENCES generation_tasks(id) ON DELETE CASCADE,
-  provider text NOT NULL CHECK (provider IN ('bailian','gemini','zhipu')),
+  provider text NOT NULL CHECK (provider IN ('bailian','gemini','zhipu','volcengine')),
   model_key text NOT NULL REFERENCES provider_models(model_key),
   model_id text NOT NULL,
   status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','running','succeeded','partial','failed','unknown')),
@@ -194,9 +194,9 @@ try {
   await pool.query("INSERT INTO schema_migrations(name) VALUES ('005_multiple_task_tags') ON CONFLICT DO NOTHING");
   // Expand provider configuration support before seeding any newly supported providers.
   await pool.query(`ALTER TABLE provider_configs DROP CONSTRAINT IF EXISTS provider_configs_provider_check`);
-  await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','deepseek'))`);
+  await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','deepseek','volcengine'))`);
   await pool.query(`ALTER TABLE provider_runs DROP CONSTRAINT IF EXISTS provider_runs_provider_check`);
-  await pool.query(`ALTER TABLE provider_runs ADD CONSTRAINT provider_runs_provider_check CHECK (provider IN ('bailian','gemini','zhipu'))`);
+  await pool.query(`ALTER TABLE provider_runs ADD CONSTRAINT provider_runs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','volcengine'))`);
 
   for (const [provider, config] of Object.entries(PROVIDERS)) {
     await pool.query(
@@ -207,13 +207,13 @@ try {
   }
   for (const model of MODELS) {
     await pool.query(
-      `INSERT INTO provider_models(model_key,provider,model_id,display_name,max_images,pricing)
-       VALUES ($1,$2,$3,$4,$5,$6)
+      `INSERT INTO provider_models(model_key,provider,model_id,display_name,enabled,max_images,pricing)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (model_key) DO UPDATE SET display_name=EXCLUDED.display_name,
          max_images=EXCLUDED.max_images,
          pricing=CASE WHEN provider_models.pricing='{}'::jsonb THEN EXCLUDED.pricing ELSE provider_models.pricing END,
          updated_at=now()`,
-      [model.key, model.provider, model.modelId, model.name, model.maxImages, JSON.stringify(model.defaultPricing)],
+      [model.key, model.provider, model.modelId, model.name, model.enabledByDefault, model.maxImages, JSON.stringify(model.defaultPricing)],
     );
   }
   await pool.query("INSERT INTO schema_migrations(name) VALUES ('002_image_model_catalog') ON CONFLICT DO NOTHING");

@@ -197,6 +197,7 @@ export function estimateCost(pricing: Record<string, unknown>, imageSize: string
 export function createAdapter(provider: ProviderSlug, modelId: string, apiKey: string, endpoint: string, config: Record<string, unknown> = {}): ProviderAdapter {
   if (provider === "bailian") return new BailianAdapter(apiKey, endpoint, modelId);
   if (provider === "gemini") return new GeminiAdapter(apiKey, endpoint || "https://generativelanguage.googleapis.com/v1beta", modelId);
+  if (provider === "volcengine") return new VolcengineAdapter(apiKey, endpoint || "https://ark.cn-beijing.volces.com/api/v3", modelId);
   return new ZhipuAdapter(apiKey, endpoint || "https://open.bigmodel.cn/api/paas/v4", modelId);
 }
 
@@ -402,6 +403,88 @@ class ZhipuAdapter implements ProviderAdapter {
       : { bytes: Buffer.from(image, "base64"), mediaType: "image/png" };
     return { outputs: [output], requestId: stringValue(body.id) || stringValue(body.request_id), usage: { imageCount: 1, raw: (body.usage as Record<string, unknown>) || {} } };
   }
+}
+
+class VolcengineAdapter implements ProviderAdapter {
+  constructor(private apiKey: string, private endpoint: string, private modelId: string) {}
+  generateTextToImage(input: Parameters<ProviderAdapter["generateTextToImage"]>[0]) {
+    return this.call({ ...input, image: null, mediaType: null });
+  }
+  editImage(input: Parameters<ProviderAdapter["editImage"]>[0]) {
+    return this.call({ ...input, image: input.image, mediaType: input.mediaType });
+  }
+
+  private async call(input: ImageInput): Promise<ProviderResult> {
+    const endpoint = this.endpoint.replace(/\/$/, "").replace(/\/images\/generations$/, "");
+    const modelSupportsSequence = ["doubao-seedream-5-0-260128", "doubao-seedream-5-0-lite-260128", "doubao-seedream-4-5-251128", "doubao-seedream-4-0-250828"].includes(this.modelId);
+    const prompt = `${input.prompt}\n画面宽高比为 ${input.aspectRatio}。`;
+    const body: Record<string, unknown> = {
+      model: this.modelId,
+      prompt,
+      size: volcengineSize(this.modelId, input.imageSize),
+      response_format: "b64_json",
+      watermark: false,
+    };
+    if (input.image) body.image = `data:${input.mediaType};base64,${input.image.toString("base64")}`;
+    if (modelSupportsSequence) {
+      body.sequential_image_generation = input.count > 1 ? "auto" : "disabled";
+      if (input.count > 1) body.sequential_image_generation_options = { max_images: input.count };
+    }
+
+    const response = await fetch(`${endpoint}/images/generations`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(600_000),
+      cache: "no-store",
+    });
+    const result = await response.json() as Record<string, unknown>;
+    if (!response.ok) throw new Error(providerMessage(result, response.status));
+    const data = Array.isArray(result.data) ? result.data as Array<Record<string, unknown>> : [];
+    const outputs: ImageOutput[] = [];
+    const itemErrors: string[] = [];
+    for (const item of data) {
+      if (item.error && typeof item.error === "object") {
+        itemErrors.push(providerMessage(item.error as Record<string, unknown>, 502));
+        continue;
+      }
+      const encoded = stringValue(item.b64_json);
+      const url = stringValue(item.url);
+      if (encoded) {
+        const format = stringValue(item.output_format)?.toLowerCase();
+        outputs.push({
+          bytes: Buffer.from(encoded, "base64"),
+          mediaType: format === "png" ? "image/png" : "image/jpeg",
+          ...parseImageDimensions(item.size),
+        });
+      } else if (url) {
+        outputs.push(await downloadRemoteImage(url, ["volces.com", "volcengine.com"]));
+      }
+    }
+    if (!outputs.length) throw new Error(itemErrors[0] || "火山方舟返回结果中没有可保存的图像");
+    const usage = (result.usage && typeof result.usage === "object" ? result.usage : {}) as Record<string, unknown>;
+    return {
+      outputs,
+      requestId: stringValue(result.id) || stringValue(result.request_id),
+      usage: {
+        requestId: stringValue(result.id) || stringValue(result.request_id),
+        imageCount: numberValue(usage.generated_images) ?? outputs.length,
+        outputTokens: numberValue(usage.output_tokens),
+        raw: usage,
+      },
+    };
+  }
+}
+
+function volcengineSize(modelId: string, requested: string) {
+  if (modelId === "doubao-seedream-5-0-260128" || modelId === "doubao-seedream-5-0-lite-260128" || modelId === "doubao-seedream-4-5-251128") return "2K";
+  return requested === "2K" ? "2K" : "1K";
+}
+
+function parseImageDimensions(value: unknown) {
+  if (typeof value !== "string") return {};
+  const match = /^(\d+)[x×](\d+)$/.exec(value);
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : {};
 }
 
 async function downloadRemoteImage(url: string, allowedDomains: string[]): Promise<ImageOutput> {

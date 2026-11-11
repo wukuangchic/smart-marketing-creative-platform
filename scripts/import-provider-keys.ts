@@ -1,7 +1,7 @@
 import { pool, query } from "../src/server/db.js";
 import { encryptSecret } from "../src/server/crypto.js";
 
-type ProviderKeyInput = Partial<Record<"bailian" | "gemini" | "zhipu" | "deepseek", string>>;
+type ProviderKeyInput = Partial<Record<"bailian" | "gemini" | "zhipu" | "deepseek" | "volcengine", string>>;
 
 async function readInput() {
   const chunks: Buffer[] = [];
@@ -11,8 +11,8 @@ async function readInput() {
 
 try {
   const values = await readInput();
-  const entries = Object.entries(values).filter((entry): entry is ["bailian" | "gemini" | "zhipu" | "deepseek", string] =>
-    ["bailian", "gemini", "zhipu", "deepseek"].includes(entry[0]) && typeof entry[1] === "string" && entry[1].trim().length > 0,
+  const entries = Object.entries(values).filter((entry): entry is ["bailian" | "gemini" | "zhipu" | "deepseek" | "volcengine", string] =>
+    ["bailian", "gemini", "zhipu", "deepseek", "volcengine"].includes(entry[0]) && typeof entry[1] === "string" && entry[1].trim().length > 0,
   );
   if (entries.length === 0) throw new Error("No provider credentials were supplied");
   const administrator = await query<{ id: string }>("SELECT id FROM users WHERE role='admin' AND active=true ORDER BY created_at LIMIT 1");

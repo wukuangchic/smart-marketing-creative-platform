@@ -32,7 +32,7 @@ export async function GET(request: Request) {
     if ((dateFrom && !validDate(dateFrom)) || (dateTo && !validDate(dateTo))) return NextResponse.json({ error: "日期格式无效" }, { status: 400 });
     if (dateFrom && dateTo && dateFrom > dateTo) return NextResponse.json({ error: "开始日期不能晚于结束日期" }, { status: 400 });
     if (tagIds.some((tagId) => !UUID_PATTERN.test(tagId)) || tagIds.length > 100) return NextResponse.json({ error: "分类标签无效" }, { status: 400 });
-    if (provider && !["bailian", "gemini", "zhipu"].includes(provider)) return NextResponse.json({ error: "模型供应商无效" }, { status: 400 });
+    if (provider && !["bailian", "gemini", "zhipu", "volcengine"].includes(provider)) return NextResponse.json({ error: "模型供应商无效" }, { status: 400 });
     if (modelKey && !/^[a-z0-9][a-z0-9_-]{0,119}$/i.test(modelKey)) return NextResponse.json({ error: "模型无效" }, { status: 400 });
 
     const values: unknown[] = [];

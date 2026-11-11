@@ -1,6 +1,6 @@
 # 图片生成模型与参考价格
 
-**核对日期：2026-11-08**
+**核对日期：2026-11-11**
 
 此表用于平台的默认成本参考单价，按生成输出计价，不是供应商报价承诺。百炼价格按华北 2（北京）列出；Gemini 按 Gemini API 标准付费层列出；智谱按开放平台 GLM-Image 文档列出。区域、账号、促销、分辨率、输入图片和服务版本可能改变实际账单。管理员可在“API 配置”按实际开通区域修改各模型单价。
 
@@ -49,6 +49,20 @@
 
 官方说明为 ¥0.10/次，当前平台请求一张图，因此表格按每张显示。提示词限制为 1,000 字符；官方支持的尺寸为 512–2048 像素且边长为 32 的倍数。[GLM-Image 官方说明](https://docs.bigmodel.cn/cn/guide/models/image-generation/glm-image)
 
+## 火山方舟（豆包 Seedream）
+
+| 模型 | 文生图 | 图生图 | 1K/张 | 2K/张 | 平台状态 |
+|---|---:|---:|---:|---:|---|
+| Seedream 5.0 Pro | 是 | 是 | ¥0.30 | ¥0.60 | 默认启用；平台单次最多 1 张 |
+| Seedream 5.0 Flash | 是 | 是 | ¥0.12 | ¥0.12 | 默认启用；平台单次最多 1 张 |
+| Seedream 5.0 Lite | 是 | 是 | — | ¥0.22 | 官方模型目录标注即将下线，默认停用；最低 2K |
+| Seedream 4.5 | 是 | 是 | — | ¥0.25 | 官方模型目录标注即将下线，默认停用；最低 2K |
+| Seedream 4.0 | 是 | 是 | ¥0.20 | ¥0.20 | 官方模型目录标注即将下线，默认停用 |
+
+模型 ID、图像尺寸、输入输出与组图参数依据[火山方舟图片生成 API](https://console.volcengine.com/ark/region%3Acn-beijing/docs/image-generation-api)和[图片生成教程](https://console.volcengine.com/ark/region%3Acn-beijing/docs/image-generation-tutorial)。当前 API Key 的默认 Endpoint 为 `https://ark.cn-beijing.volces.com/api/v3`。Lite、4.5、4.0 的单次组图上限分别受模型限制；平台按单张原图逐次调用，单次请求最多配置 14 张，实际返回可能少于请求上限。
+
+官方[图片生成价格表](https://console.volcengine.com/ark/region%3Acn-beijing/docs/model-pricing)按实际成功生成张数计费：Pro 输出单价按像素面积分为 ≤2.61M 与 >2.61M 两档，图生图输入图首张免费、之后每张 ¥0.02；Flash ¥0.12/张，Lite ¥0.22/张，4.5 ¥0.25/张，4.0 ¥0.20/张。平台预估按当前选择的 1K/2K 档位；Pro 的 2K 默认按 ¥0.60 估算，若实际输出像素低于官方阈值可能高估，最终以供应商账单为准。
+
 ## DeepSeek
 
 DeepSeek 不作为图片生成模型。工作台提示词重构使用官方 OpenAI 兼容接口的 `deepseek-flash`（当前模型版本 DeepSeek-V4.1-Flash-1017），按 Token 计费。官方页面列出的标准价格会区分缓存命中/未命中和峰谷时段：缓存未命中输入约 $0.15–$0.30 / 百万 Token，输出约 $0.60–$1.20 / 百万 Token；缓存命中输入约 $0.003–$0.006 / 百万 Token。此价格易变，部署使用前应以[官方模型与价格页面](https://api-docs.deepseek.com/quick_start/pricing/)为准；接口和模型名见[官方 Chat Completions 文档](https://api-docs.deepseek.com/api/create-chat-completion/)。提示词重构的 Token 用量记入审计日志，目前不并入图片逐次成本统计。
@@ -56,6 +70,6 @@ DeepSeek 不作为图片生成模型。工作台提示词重构使用官方 Open
 ## 成本估算边界
 
 - 上述价格是管理员配置的默认参考值，保存后会参与逐次成本估算；实际以供应商账单为准。
-- 目前估算按生成成功的图片张数乘以对应输出单价；它不会将账期汇总账单拆成单张图片费用。
+- 目前估算按生成成功的图片张数乘以对应输出单价；它不会将账期汇总账单拆成单张图片费用。Seedream 组图实际张数由模型响应决定，未成功输出的图片不计费。
 - Qwen Image 3.0 系列图生图的输入图片费用、Gemini 的文本/输入图片 token、以及不同地域价格可能增加实际成本。需要精确估算时，应根据账号地域和供应商实际计费进一步调整。
 - 百炼当前统一按北京参考价预填；如果 Qwen API Key 属于新加坡等其他地域，应在管理员页面改成对应地域的价格。

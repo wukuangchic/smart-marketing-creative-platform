@@ -1,7 +1,7 @@
 export type GenerationMode = "text-to-image" | "image-to-image";
 export type TaskStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "unknown";
 export type RunStatus = "queued" | "running" | "succeeded" | "partial" | "failed" | "unknown";
-export type ProviderSlug = "bailian" | "gemini" | "zhipu";
+export type ProviderSlug = "bailian" | "gemini" | "zhipu" | "volcengine";
 export type ProviderConfigSlug = ProviderSlug | "deepseek";
 
 export interface GenerationRequest {
