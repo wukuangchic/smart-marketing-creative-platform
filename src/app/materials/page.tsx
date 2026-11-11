@@ -22,6 +22,7 @@ export default function MaterialsPage() {
   const [tagMenuOpen, setTagMenuOpen] = useState(false);
   const [tagSearch, setTagSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [selectedMaterials, setSelectedMaterials] = useState<Map<string, Material>>(() => new Map());
   const [tagsDialogOpen, setTagsDialogOpen] = useState(false);
   const [editTagIds, setEditTagIds] = useState<string[]>([]);
   const [clearTags, setClearTags] = useState(false);
@@ -29,6 +30,7 @@ export default function MaterialsPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [loading, setLoading] = useState(true);
   const [downloading, setDownloading] = useState(false);
+  const [startingImageEdit, setStartingImageEdit] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -66,13 +68,16 @@ export default function MaterialsPage() {
   }
 
   function toggleAsset(id: string) {
+    const asset = assets.find((item) => item.id === id);
     setSelected((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+    setSelectedMaterials((current) => { const next = new Map(current); if (next.has(id)) next.delete(id); else if (asset) next.set(id, asset); return next; });
   }
 
   function toggleCurrentPage() {
     const pageIds = assets.map((asset) => asset.id);
     const allSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
     setSelected((current) => { const next = new Set(current); for (const id of pageIds) allSelected ? next.delete(id) : next.add(id); return next; });
+    setSelectedMaterials((current) => { const next = new Map(current); for (const asset of assets) allSelected ? next.delete(asset.id) : next.set(asset.id, asset); return next; });
   }
 
   function toggleEditTag(id: string) {
@@ -80,28 +85,50 @@ export default function MaterialsPage() {
     setEditTagIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
   }
 
-  function useMaterialForImageEdit(asset: Material) {
-    const rawPrefix = (asset.prompt_prefix || "").slice(0, 4).toUpperCase();
-    const promptPrefix = /^[0-9A-HJKMNP-TV-Z]{4}$/.test(rawPrefix) ? rawPrefix : null;
-    let nameTemplate = asset.name_template || "{标识}";
-    nameTemplate = nameTemplate.replaceAll("{序号}", "");
-    if (!nameTemplate.includes("{标识}")) nameTemplate = "{标识}";
-    if (!nameTemplate.includes("{原名}")) nameTemplate += "-{原名}";
-    const copy = {
-      mode: "image-to-image",
-      prompt: asset.prompt || "",
-      nameTemplate,
-      promptPrefix,
-      tagIds: asset.tags?.map((tag) => tag.id) || (asset.tag_id ? [asset.tag_id] : []),
-      models: asset.model_key ? [{ modelKey: asset.model_key, count: 1 }] : [
-        { modelKey: "bailian-qwen-image-3-pro", count: 1 },
-        { modelKey: "gemini-3-1-flash-image", count: 1 },
-      ],
-      settings: asset.settings || { aspectRatio: "1:1", targetWidth: 1024, targetHeight: 1024 },
-      referenceAssets: [{ id: asset.id, originalName: asset.original_name }],
-    };
-    try { window.sessionStorage.setItem("creative-studio-copy", JSON.stringify(copy)); window.location.assign("/"); }
-    catch { setError("无法临时保存这张素材，请重试"); }
+  async function startSelectedImageEdit() {
+    const chosen = [...selectedMaterials.values()];
+    if (!chosen.length) return;
+    if (chosen.length > 10) { setError("图生图最多选择 10 张原图，请减少选择后重试"); return; }
+    setStartingImageEdit(true); setError("");
+    try {
+      const prompts = [...new Set(chosen.map((asset) => asset.prompt.trim()).filter(Boolean))];
+      const differentPrompts = prompts.length > 1;
+      if (prompts.length && chosen.some((asset) => !asset.prompt.trim())) {
+        throw new Error("所选素材中有图片没有历史提示词，无法完整重构；请改选素材或在创作页补充提示词");
+      }
+      let prompt = prompts[0] || "";
+      if (differentPrompts) {
+        const response = await fetch("/api/prompts/rewrite", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompts }) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "DeepSeek 提示词重构失败");
+        prompt = typeof data.prompt === "string" ? data.prompt : "";
+        if (!prompt) throw new Error("DeepSeek 没有返回重构后的提示词");
+      }
+      const rawPrefix = (chosen[0]?.prompt_prefix || "").slice(0, 4).toUpperCase();
+      const promptPrefix = !differentPrompts && /^[0-9A-HJKMNP-TV-Z]{4}$/.test(rawPrefix) ? rawPrefix : null;
+      let nameTemplate = chosen[0]?.name_template || "{标识}";
+      nameTemplate = nameTemplate.replaceAll("{序号}", "");
+      if (!nameTemplate.includes("{标识}")) nameTemplate = "{标识}";
+      if (!nameTemplate.includes("{原名}")) nameTemplate += "-{原名}";
+      const tagIds = [...new Set(chosen.flatMap((asset) => asset.tags?.length ? asset.tags.map((tag) => tag.id) : (asset.tag_id ? [asset.tag_id] : [])))];
+      const sourceModel = chosen.find((asset) => asset.model_key)?.model_key;
+      const copy = {
+        mode: "image-to-image",
+        prompt,
+        nameTemplate,
+        promptPrefix,
+        tagIds,
+        models: sourceModel ? [{ modelKey: sourceModel, count: 1 }] : [
+          { modelKey: "bailian-qwen-image-3-pro", count: 1 },
+          { modelKey: "gemini-3-1-flash-image", count: 1 },
+        ],
+        settings: chosen[0]?.settings || { aspectRatio: "1:1", targetWidth: 1024, targetHeight: 1024 },
+        referenceAssets: chosen.map((asset) => ({ id: asset.id, originalName: asset.original_name })),
+      };
+      window.sessionStorage.setItem("creative-studio-copy", JSON.stringify(copy));
+      window.location.assign("/");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "无法发起图生图，请重试"); }
+    finally { setStartingImageEdit(false); }
   }
 
   async function saveSelectedTags() {
@@ -111,7 +138,7 @@ export default function MaterialsPage() {
       const response = await fetch("/api/materials/tags", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ assetIds: [...selected], tagIds: clearTags ? [] : editTagIds }) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "分类标签修改失败");
-      setSelected(new Set()); setTagsDialogOpen(false); setEditTagIds([]); setClearTags(false); setReloadKey((value) => value + 1);
+      setSelected(new Set()); setSelectedMaterials(new Map()); setTagsDialogOpen(false); setEditTagIds([]); setClearTags(false); setReloadKey((value) => value + 1);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "分类标签修改失败"); }
     finally { setSavingTags(false); }
   }
@@ -149,12 +176,11 @@ export default function MaterialsPage() {
       <button className="button button-quiet" onClick={() => { setDraft(EMPTY_FILTERS); setTagSearch(""); setTagMenuOpen(false); setPage(1); setFilters(EMPTY_FILTERS); }}><X size={14} /> 重置</button>
     </section>
     {error && <div className="notice notice-error">{error}</div>}
-    <div className="materials-toolbar"><div><button className="button button-quiet" onClick={toggleCurrentPage} disabled={!assets.length}>{pageSelected ? "取消本页选择" : "选择本页"}</button><span className="selected-count">已选 {selected.size} 张{selected.size > 100 ? " · 下载每批最多 100 张" : ""}{selected.size > 500 ? " · 标签修改最多 500 张" : ""}</span></div><div className="materials-toolbar-actions"><button className="button button-quiet" onClick={() => { setEditTagIds([]); setClearTags(false); setTagsDialogOpen(true); }} disabled={!selected.size || selected.size > 500}>修改分类标签</button><button className="button button-primary" onClick={() => void downloadSelected()} disabled={!selected.size || selected.size > 100 || downloading}>{downloading ? <><LoaderCircle size={14} className="spin" /> 正在打包</> : <><Download size={14} /> 下载所选素材</>}</button></div></div>
+    <div className="materials-toolbar"><div><button className="button button-quiet" onClick={toggleCurrentPage} disabled={!assets.length}>{pageSelected ? "取消本页选择" : "选择本页"}</button><span className="selected-count">已选 {selected.size} 张{selected.size > 10 ? " · 图生图最多 10 张" : ""}{selected.size > 100 ? " · 下载每批最多 100 张" : ""}{selected.size > 500 ? " · 标签修改最多 500 张" : ""}</span></div><div className="materials-toolbar-actions"><button className="button button-quiet" onClick={() => void startSelectedImageEdit()} disabled={!selected.size || selected.size > 10 || startingImageEdit}>{startingImageEdit ? <><LoaderCircle size={14} className="spin" /> {new Set([...selectedMaterials.values()].map((asset) => asset.prompt.trim()).filter(Boolean)).size > 1 ? "DeepSeek 重构中" : "正在准备"}</> : <><ImagePlus size={14} /> 对所选素材图生图</>}</button><button className="button button-quiet" onClick={() => { setEditTagIds([]); setClearTags(false); setTagsDialogOpen(true); }} disabled={!selected.size || selected.size > 500}>修改分类标签</button><button className="button button-primary" onClick={() => void downloadSelected()} disabled={!selected.size || selected.size > 100 || downloading}>{downloading ? <><LoaderCircle size={14} className="spin" /> 正在打包</> : <><Download size={14} /> 下载所选素材</>}</button></div></div>
     {loading && !assets.length ? <div className="materials-loading"><LoaderCircle size={20} className="spin" /> 正在加载素材</div> : assets.length ? <div className="materials-grid">{assets.map((asset) => <article className={selected.has(asset.id) ? "material-card selected" : "material-card"} key={asset.id}>
       <label className="material-select" title={selected.has(asset.id) ? "取消选择" : "选择素材"}><input type="checkbox" checked={selected.has(asset.id)} onChange={() => toggleAsset(asset.id)} /><span>{selected.has(asset.id) && <Check size={12} />}</span></label>
       <a className="material-image" href={`/api/assets/${asset.id}`} target="_blank" rel="noreferrer"><img src={`/api/assets/${asset.id}/thumbnail`} alt={asset.original_name} loading="lazy" /></a>
       <div className="material-meta"><b title={asset.original_name}>{asset.original_name}</b><span>{asset.tags?.length ? asset.tags.map((tag) => tag.name).join(" · ") : asset.tag_name || "未分类"} · {asset.identifier || "旧素材"}</span><small>{asset.model_name || asset.model_id || "未知模型"} · {new Date(asset.created_at).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}{asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}</small></div>
-      <div className="material-actions"><button type="button" className="button button-quiet" onClick={() => useMaterialForImageEdit(asset)}><ImagePlus size={13} /> 图生图</button></div>
     </article>)}</div> : !loading && <div className="empty-state materials-empty"><ImageIcon size={22} /><b>{filters.identifier || filters.dateFrom || filters.dateTo || filters.tagIds.length || filters.provider || filters.modelKey ? "没有符合条件的素材" : "素材库还是空的"}</b><span>完成图片创作后，生成结果会自动收录在这里。</span></div>}
     {total > 0 && <div className="materials-pagination"><label>每页显示<select className="period-select" value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1); }}>{PAGE_SIZES.map((size) => <option key={size} value={size}>{size} 张</option>)}</select></label><span>第 {page} / {pageCount} 页 · 共 {total} 张</span><div><button type="button" className="button button-quiet" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1 || loading}>上一页</button><button type="button" className="button button-quiet" onClick={() => setPage((value) => Math.min(pageCount, value + 1))} disabled={page >= pageCount || loading}>下一页</button></div></div>}
     {tagsDialogOpen && <div className="dialog-overlay" onClick={() => setTagsDialogOpen(false)}><section className="dialog-card material-tags-dialog" role="dialog" aria-modal="true" aria-labelledby="material-tags-title" onClick={(event) => event.stopPropagation()}><div className="dialog-head"><div><span className="dialog-icon"><Filter size={16} /></span><div><h2 id="material-tags-title">修改分类标签</h2><p>为已选 {selected.size} 张素材更新共享标签。</p></div></div><button className="icon-button" aria-label="关闭" onClick={() => setTagsDialogOpen(false)}><X size={17} /></button></div><p className="dialog-footnote">标签属于整条创作任务。若所选图片来自同一任务，修改会同步应用到该任务的全部生成图片。</p><div className="material-edit-tags">{tags.map((tag) => <button type="button" key={tag.id} className={editTagIds.includes(tag.id) ? "category-dropdown-option selected" : "category-dropdown-option"} aria-pressed={editTagIds.includes(tag.id)} onClick={() => toggleEditTag(tag.id)}><span className={editTagIds.includes(tag.id) ? "category-checkbox checked" : "category-checkbox"}>{editTagIds.includes(tag.id) && <Check size={10} />}</span>{tag.name}</button>)}</div><label className="material-clear-tags"><input type="checkbox" checked={clearTags} onChange={(event) => { setClearTags(event.target.checked); if (event.target.checked) setEditTagIds([]); }} /><span>清空所选任务的全部标签</span></label><div className="dialog-actions"><button className="button button-quiet" onClick={() => setTagsDialogOpen(false)}>取消</button><button className="button button-primary" onClick={() => void saveSelectedTags()} disabled={savingTags || (!editTagIds.length && !clearTags)}>{savingTags ? <><LoaderCircle className="spin" size={14} /> 保存中</> : "保存标签"}</button></div></section></div>}
