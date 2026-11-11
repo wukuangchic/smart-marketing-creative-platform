@@ -116,6 +116,24 @@ export function Studio() {
   }, []);
 
   useEffect(() => {
+    const storageKey = "creative-studio-prompt-use";
+    const raw = window.sessionStorage.getItem(storageKey);
+    if (!raw) return;
+    window.sessionStorage.removeItem(storageKey);
+    try {
+      const selectedPrompt = JSON.parse(raw) as { prompt?: unknown; promptPrefix?: unknown };
+      if (typeof selectedPrompt.prompt !== "string") return;
+      const prefix = typeof selectedPrompt.promptPrefix === "string" && /^[0-9A-HJKMNP-TV-Z]{4}$/i.test(selectedPrompt.promptPrefix)
+        ? selectedPrompt.promptPrefix.toUpperCase() : null;
+      setPrompt(selectedPrompt.prompt);
+      setReusedPromptPrefix(prefix);
+      setMessage(prefix ? `已直接使用 Prompt 库提示词，后续编号沿用前缀 ${prefix}；请手动查看预估并生成` : "已直接使用 Prompt 库提示词，将为这组提示词生成新前缀；请手动查看预估并生成");
+    } catch {
+      setMessage("Prompt 库提示词读取失败，请重新选择");
+    }
+  }, []);
+
+  useEffect(() => {
     if (!modelCatalogReady) return;
     const storageKey = "creative-studio-copy";
     const raw = window.sessionStorage.getItem(storageKey);

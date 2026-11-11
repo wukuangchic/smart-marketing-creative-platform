@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Aperture, ArrowUpRight, BarChart3, Clock3, Gauge, Images, LogOut, Settings2, Shield, Sparkles, WalletCards } from "lucide-react";
+import { Aperture, ArrowUpRight, BarChart3, Clock3, FileText, Gauge, Images, LogOut, Settings2, Shield, Sparkles, WalletCards } from "lucide-react";
 
 type User = { id: string; openId: string; name: string; role: "member" | "admin"; avatarUrl: string | null };
 const nav = [
   { href: "/", label: "创意生产", icon: Sparkles },
   { href: "/history", label: "历史记录", icon: Clock3 },
   { href: "/materials", label: "素材库", icon: Images },
+  { href: "/prompt-library", label: "Prompt 库", icon: FileText },
   { href: "/costs", label: "成本统计", icon: WalletCards },
   { href: "/consumption", label: "消耗统计", icon: BarChart3, planned: true },
   { href: "/roi", label: "ROI 面板", icon: Gauge, planned: true },
