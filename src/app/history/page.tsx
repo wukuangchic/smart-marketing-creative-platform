@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { ArrowUpRight, Clock3, Copy, Download, ImagePlus, Search } from "lucide-react";
 
 type Output = { id: string; url: string; originalName: string; width: number | null; height: number | null };
-type Run = { id: string; provider: string; modelKey: string; modelId: string; status: string; requestedCount: number; imageCount: number; estimatedCost: string | null; currency: string | null; estimatedCostCny: string | null; errorMessage: string | null; outputs: Output[] };
+type Run = { id: string; provider: string; modelKey: string; modelId: string; status: string; requestedCount: number; imageCount: number; estimatedCost: string | null; currency: string | null; estimatedCostCny: string | null; errorMessage: string | null; attemptCount?: number; retryDueAt?: string | null; outputs: Output[] };
 type InputAsset = { id: string; kind: "input"; url: string; originalName: string; width: number | null; height: number | null; mediaType: string };
 type Task = { id: string; mode: string; prompt: string; name_template: string | null; identifier: string | null; tag_id: string | null; tag_name: string | null; tags?: Array<{ id: string; name: string }>; settings: Record<string, string | number>; status: string; created_at: string; creator_name: string; assets?: InputAsset[]; runs: Run[] };
 type PreviewAsset = { id: string; url: string; originalName: string; kind: "input" | "output" };
@@ -87,6 +87,7 @@ export default function HistoryPage() {
         </div>
         <div className="history-images">{previews.map((asset) => <a className="history-image-preview" key={asset.id} href={asset.url} target="_blank" rel="noreferrer"><img src={`/api/assets/${asset.id}/thumbnail`} alt={asset.kind === "input" ? "图生图原图" : asset.originalName} loading="lazy" /><span><ArrowUpRight size={13} /></span></a>)}</div>
           <div className="history-costs">{[...runsByModel].map(([modelKey, runs]) => { const currency = runs.find((run) => run.currency)?.currency || ""; const priced = runs.filter((run) => run.estimatedCost != null); const amount = priced.reduce((sum, run) => sum + Number(run.estimatedCost), 0); const partial = priced.length !== runs.length; return <div key={modelKey}><small>{runs[0].modelId.replace("-image", "")}</small><b>{priced.length ? `${amount.toFixed(4)} ${currency}${partial ? "（部分）" : ""}` : "待配置"}</b></div>; })}<div className="task-cost-total"><small>任务合计（CNY）</small><b>{cnyComplete ? `¥${knownCny.toFixed(4)}` : knownCny ? `已计 ¥${knownCny.toFixed(4)}（未完整）` : "待配置"}</b></div></div>
+        {task.runs.some((run) => run.errorMessage && (run.status === "unknown" || (run.attemptCount || 0) > 1 || run.retryDueAt)) && <p className="history-retry-warning">{task.runs.find((run) => run.errorMessage && (run.status === "unknown" || (run.attemptCount || 0) > 1 || run.retryDueAt))?.errorMessage}</p>}
       </article>;
     })}
       {loading && !tasks.length && <div className="materials-loading">正在加载历史记录</div>}

@@ -3,6 +3,7 @@ import { query } from "./db";
 import { MODELS, nativeImageSize } from "./models";
 import { readMedia, removeMedia, resizeGenerated, storeGenerated } from "./media";
 import { createMaterialIdentifier, isPromptPrefix } from "./identifiers";
+import { getBoss } from "./queue";
 import type { ProviderSlug } from "./types";
 
 export interface ImageOutput {
@@ -34,6 +35,8 @@ export interface ProviderAdapter {
 }
 
 const MAX_GENERATED_BYTES = 30 * 1024 * 1024;
+const SEEDREAM_RETRY_DELAY_SECONDS = 60;
+const MAX_SEEDREAM_ATTEMPTS = 2;
 
 function taskDateForFilename(value: Date | string) {
   const parts = new Intl.DateTimeFormat("en", {
@@ -55,10 +58,17 @@ export async function runProviderRun(runId: string) {
   );
   const run = runResult.rows[0];
   if (!run) return;
-  const claimed = await query("UPDATE provider_runs SET status='running',started_at=now() WHERE id=$1 AND status='queued' RETURNING id", [runId]);
+  const claimed = await query<{ attempt_count: number }>(
+    "UPDATE provider_runs SET status='running',started_at=now(),finished_at=NULL,retry_due_at=NULL,attempt_count=attempt_count+1 WHERE id=$1 AND status='queued' RETURNING attempt_count",
+    [runId],
+  );
   if (!claimed.rowCount) return;
+  const attemptNumber = Number(claimed.rows[0].attempt_count);
+  const attemptStartedAt = new Date();
   await query("UPDATE generation_tasks SET status='running' WHERE id=$1", [run.task_id]);
   let apiKeyForRedaction = "";
+  let providerCallStarted = false;
+  let providerResponseReceived = false;
   try {
     const configResult = await query<{ enabled: boolean; endpoint: string | null; api_key_ciphertext: string | null; config: Record<string, unknown> }>(
       "SELECT enabled,endpoint,api_key_ciphertext,config FROM provider_configs WHERE provider=$1", [run.provider],
@@ -80,16 +90,19 @@ export async function runProviderRun(runId: string) {
       if (!input.rows[0]) throw new Error("找不到图生图原图");
       sourceName = input.rows[0].original_name.replace(/\.[^.]+$/, "");
       const image = await readMedia(input.rows[0].relative_path);
+      providerCallStarted = true;
       providerResult = await adapter.editImage({
         prompt: run.prompt, count: run.requested_count, aspectRatio: run.settings.aspectRatio || "1:1",
         imageSize: providerImageSize, image, mediaType: input.rows[0].media_type,
       });
     } else {
+      providerCallStarted = true;
       providerResult = await adapter.generateTextToImage({
         prompt: run.prompt, count: run.requested_count, aspectRatio: run.settings.aspectRatio || "1:1",
         imageSize: providerImageSize,
       });
     }
+    providerResponseReceived = true;
     if (run.settings.targetWidth && run.settings.targetHeight) {
       providerResult.outputs = await Promise.all(providerResult.outputs.map((output) =>
         resizeGenerated(output.bytes, output.mediaType, targetWidth, targetHeight),
@@ -148,23 +161,139 @@ export async function runProviderRun(runId: string) {
       ? (Number(price.amount) * Number(price.currency === "CNY" ? 1 : fx!.rows[0].rate_to_cny)).toFixed(8) : null;
     const runStatus = providerResult.outputs.length < run.requested_count ? "partial" : "succeeded";
     const partialMessage = runStatus === "partial" ? `模型请求 ${run.requested_count} 张，实际返回 ${providerResult.outputs.length} 张` : null;
+    const retryCostWarning = attemptNumber > 1 ? "自动重试已成功，但首次调用计费状态未知，估算成本只包含本次成功结果，可能未计入首次调用。" : null;
+    const completionMessage = [partialMessage, retryCostWarning].filter(Boolean).join("；") || null;
+    const attemptRecord = {
+      attempt: attemptNumber,
+      status: runStatus,
+      startedAt: attemptStartedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      requestId: providerResult.requestId || null,
+      imageCount: providerResult.outputs.length,
+      estimatedCost: price?.amount || null,
+      currency: price?.currency || null,
+    };
     await query(
-      `UPDATE provider_runs SET status=$8,image_count=$2,request_id=$3,usage=$4,estimated_cost=$5,currency=$6,estimated_cost_cny=$7,error_message=$9,finished_at=now()
+      `UPDATE provider_runs SET status=$8,image_count=$2,request_id=$3,usage=$4,estimated_cost=$5,currency=$6,estimated_cost_cny=$7,error_message=$9,finished_at=now(),retry_due_at=NULL,
+       attempt_history=attempt_history || jsonb_build_array($10::jsonb)
        WHERE id=$1`,
-      [runId, providerResult.outputs.length, providerResult.requestId || null, JSON.stringify(providerResult.usage), price?.amount || null, price?.currency || null, cny, runStatus, partialMessage],
+      [runId, providerResult.outputs.length, providerResult.requestId || null, JSON.stringify(providerResult.usage), price?.amount || null, price?.currency || null, cny, runStatus, completionMessage, JSON.stringify(attemptRecord)],
     );
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : "图片生成失败";
     const message = (apiKeyForRedaction ? rawMessage.replaceAll(apiKeyForRedaction, "[REDACTED]") : rawMessage).slice(0, 700);
-    const uncertain = (error instanceof DOMException && error.name === "TimeoutError") || error instanceof TypeError;
-    await finishRun(runId, uncertain ? "unknown" : "failed", { error: uncertain ? "请求超时，供应商是否已计费未知；为避免重复费用，请先查询供应商记录" : message });
+    const uncertain = providerCallStarted && !providerResponseReceived && ((error instanceof DOMException && error.name === "TimeoutError") || error instanceof TypeError);
+    const details = providerErrorDetails(error);
+    const attemptRecord = {
+      attempt: attemptNumber,
+      status: uncertain ? "unknown" : "failed",
+      startedAt: attemptStartedAt.toISOString(),
+      finishedAt: new Date().toISOString(),
+      errorName: details.name,
+      errorCode: details.code,
+      errorSyscall: details.syscall,
+      errorMessage: message,
+    };
+    const isSeedream = run.provider === "volcengine" && run.model_id.startsWith("doubao-seedream-");
+    console[uncertain ? "warn" : "error"]("[provider] generation run ended with an error", {
+      runId, provider: run.provider, modelId: run.model_id, attempt: attemptNumber,
+      uncertain, errorName: details.name, errorCode: details.code, errorSyscall: details.syscall,
+    });
+    if (uncertain && isSeedream && attemptNumber < MAX_SEEDREAM_ATTEMPTS) {
+      await scheduleSeedreamRetry(runId, run.task_id, attemptRecord);
+    } else {
+      const finalError = uncertain && isSeedream
+        ? `自动重试后调用结果仍未知；已达到重试上限，请核对火山方舟调用记录和账单。${details.code ? `（${details.code}${details.syscall ? `/${details.syscall}` : ""}）` : ""}`
+        : uncertain
+          ? `调用结果未知；请先核对供应商记录后再手动重试。${details.code ? `（${details.code}${details.syscall ? `/${details.syscall}` : ""}）` : ""}`
+          : attemptNumber > 1
+            ? `${message}；前次请求结果未知，可能已经计费，估算成本可能未包含首次调用。`
+            : message;
+      await finishRun(runId, uncertain ? "unknown" : "failed", { error: finalError, attempt: attemptRecord });
+    }
   } finally {
     await refreshTaskStatus(run.task_id);
   }
 }
 
-async function finishRun(runId: string, status: "failed" | "unknown", options: { error: string }) {
-  await query("UPDATE provider_runs SET status=$2,error_message=$3,finished_at=now() WHERE id=$1", [runId, status, options.error]);
+async function finishRun(runId: string, status: "failed" | "unknown", options: { error: string; attempt: Record<string, unknown> }) {
+  await query(
+    "UPDATE provider_runs SET status=$2,error_message=$3,finished_at=now(),retry_due_at=NULL,attempt_history=attempt_history || jsonb_build_array($4::jsonb) WHERE id=$1",
+    [runId, status, options.error, JSON.stringify(options.attempt)],
+  );
+}
+
+async function scheduleSeedreamRetry(runId: string, taskId: string, attempt: Record<string, unknown>) {
+  const retryAt = new Date(Date.now() + SEEDREAM_RETRY_DELAY_SECONDS * 1000);
+  const message = `调用结果未知；系统将在约 ${SEEDREAM_RETRY_DELAY_SECONDS} 秒后自动重试一次。首次请求可能已经计费，成本统计可能暂未包含该次调用。`;
+  const queued = await query<{ id: string }>(
+    `UPDATE provider_runs SET status='queued',error_message=$3,finished_at=NULL,retry_due_at=$2,
+       attempt_history=attempt_history || jsonb_build_array($4::jsonb)
+     WHERE id=$1 AND status='running' RETURNING id`,
+    [runId, retryAt, message, JSON.stringify(attempt)],
+  );
+  if (!queued.rowCount) return;
+  try {
+    await query("UPDATE generation_tasks SET status='running',finished_at=NULL WHERE id=$1", [taskId]);
+    const boss = await getBoss();
+    const jobId = await boss.send("generate-provider-run", { runId }, { startAfter: retryAt });
+    if (!jobId) throw new Error("Delayed retry was not accepted by the queue");
+    console.warn("[provider] Seedream retry scheduled", { runId, attempt: 2, delaySeconds: SEEDREAM_RETRY_DELAY_SECONDS });
+  } catch (error) {
+    const details = providerErrorDetails(error);
+    const schedulingError = `自动重试未能进入任务队列，请稍后人工核对；首次请求可能已经计费。${details.code ? `（${details.code}${details.syscall ? `/${details.syscall}` : ""}）` : ""}`;
+    const schedulingAttempt = { event: "retry_enqueue_failed", at: new Date().toISOString(), errorName: details.name, errorCode: details.code, errorSyscall: details.syscall };
+    await query(
+      `UPDATE provider_runs SET status='unknown',error_message=$2,finished_at=now(),retry_due_at=NULL,
+         attempt_history=attempt_history || jsonb_build_array($3::jsonb)
+       WHERE id=$1 AND status='queued'`,
+      [runId, schedulingError, JSON.stringify(schedulingAttempt)],
+    );
+    console.error("[provider] Seedream retry enqueue failed", { runId, errorName: details.name, errorCode: details.code, errorSyscall: details.syscall });
+  }
+}
+
+function providerErrorDetails(error: unknown) {
+  let name = error instanceof Error ? error.name : "UnknownError";
+  let code: string | undefined;
+  let syscall: string | undefined;
+  const visited = new Set<object>();
+  const inspect = (value: unknown, depth: number) => {
+    if (!value || typeof value !== "object" || depth > 6 || visited.has(value)) return;
+    visited.add(value);
+    const record = value as Record<string, unknown>;
+    if (typeof record.name === "string" && name === "UnknownError") name = record.name;
+    if (!code && typeof record.code === "string" && /^[A-Z0-9_]{2,40}$/.test(record.code)) code = record.code;
+    if (!syscall && typeof record.syscall === "string" && /^[a-z0-9_]{2,40}$/i.test(record.syscall)) syscall = record.syscall;
+    inspect(record.cause, depth + 1);
+    if (Array.isArray(record.errors)) for (const nested of record.errors.slice(0, 8)) inspect(nested, depth + 1);
+  };
+  inspect(error, 0);
+  return { name, code, syscall };
+}
+
+export async function restoreSeedreamRetryQueue(boss: Awaited<ReturnType<typeof getBoss>>) {
+  const recovered = await query<{ run_id: string; task_id: string; retry_due_at: Date | string }>(
+    `UPDATE provider_runs SET status='queued',retry_due_at=now()+$1::int*interval '1 second',finished_at=NULL,
+       error_message='工作进程在首次调用期间停止；系统将在约 60 秒后自动重试一次，首次请求可能已经计费。'
+     WHERE provider='volcengine' AND model_id LIKE 'doubao-seedream-%' AND status='unknown' AND attempt_count=1
+     RETURNING id AS run_id,task_id,retry_due_at`,
+    [String(SEEDREAM_RETRY_DELAY_SECONDS)],
+  );
+  for (const taskId of new Set(recovered.rows.map((row) => row.task_id))) {
+    await query("UPDATE generation_tasks SET status='running',finished_at=NULL WHERE id=$1", [taskId]);
+  }
+  const pending = await query<{ run_id: string; retry_due_at: Date | string }>(
+    `SELECT id AS run_id,retry_due_at FROM provider_runs
+     WHERE provider='volcengine' AND model_id LIKE 'doubao-seedream-%' AND status='queued' AND retry_due_at IS NOT NULL`,
+  );
+  let queuedCount = 0;
+  for (const run of pending.rows) {
+    const retryAt = new Date(run.retry_due_at);
+    const jobId = await boss.send("generate-provider-run", { runId: run.run_id }, { startAfter: retryAt });
+    if (jobId) queuedCount += 1;
+  }
+  return queuedCount;
 }
 
 async function refreshTaskStatus(taskId: string) {
@@ -179,7 +308,8 @@ async function refreshTaskStatus(taskId: string) {
 
 export async function recoverInterruptedRuns() {
   const interrupted = await query<{ run_id: string; task_id: string }>(
-    `UPDATE provider_runs SET status='unknown',error_message='工作进程在任务执行中停止，供应商是否已计费未知；请先核对供应商记录',finished_at=now()
+    `UPDATE provider_runs SET status='unknown',error_message='工作进程在任务执行中停止，供应商是否已计费未知；请先核对供应商记录',finished_at=now(),
+       attempt_history=attempt_history || jsonb_build_array(jsonb_build_object('attempt',attempt_count,'status','unknown','errorName','WorkerInterrupted','errorMessage','工作进程在任务执行中停止','finishedAt',now()))
      WHERE status='running' RETURNING id AS run_id,task_id`,
   );
   for (const taskId of new Set(interrupted.rows.map((row) => row.task_id))) await refreshTaskStatus(taskId);

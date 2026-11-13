@@ -188,12 +188,16 @@ try {
     SELECT id,tag_id FROM generation_tasks WHERE tag_id IS NOT NULL ON CONFLICT DO NOTHING`);
   await pool.query(`DROP INDEX IF EXISTS generation_tasks_identifier_uidx`);
   await pool.query(`ALTER TABLE provider_runs ADD COLUMN IF NOT EXISTS sequence_start integer NOT NULL DEFAULT 1`);
+  await pool.query(`ALTER TABLE provider_runs ADD COLUMN IF NOT EXISTS attempt_count integer NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE provider_runs ADD COLUMN IF NOT EXISTS retry_due_at timestamptz`);
+  await pool.query(`ALTER TABLE provider_runs ADD COLUMN IF NOT EXISTS attempt_history jsonb NOT NULL DEFAULT '[]'::jsonb`);
   await pool.query(`ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS identifier text`);
   await pool.query(`CREATE INDEX IF NOT EXISTS media_assets_identifier_idx ON media_assets(identifier)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS media_assets_library_idx ON media_assets(kind,created_at DESC)`);
   await pool.query("INSERT INTO schema_migrations(name) VALUES ('003_creative_tags_and_sequences') ON CONFLICT DO NOTHING");
   await pool.query("INSERT INTO schema_migrations(name) VALUES ('004_prompt_prefix_identifiers') ON CONFLICT DO NOTHING");
   await pool.query("INSERT INTO schema_migrations(name) VALUES ('005_multiple_task_tags') ON CONFLICT DO NOTHING");
+  await pool.query("INSERT INTO schema_migrations(name) VALUES ('006_provider_run_retry_tracking') ON CONFLICT DO NOTHING");
   // Expand provider configuration support before seeding any newly supported providers.
   await pool.query(`ALTER TABLE provider_configs DROP CONSTRAINT IF EXISTS provider_configs_provider_check`);
   await pool.query(`ALTER TABLE provider_configs ADD CONSTRAINT provider_configs_provider_check CHECK (provider IN ('bailian','gemini','zhipu','deepseek','volcengine'))`);
